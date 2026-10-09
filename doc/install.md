@@ -179,9 +179,11 @@ volumes:
 
 4. **Gitea連携 & Drone OAuth設定:** 所要時間: 約10分.
 1. 最初に Gitea と リバースプロキシを起動します。
+Gitea (rootless イメージ) はUID 1000で動作するため、事前にデータディレクトリの所有者を変更しておかないと `/var/lib/gitea/git is not writable` で起動に失敗します。
 
 ```bash
 cd ~/dev-env
+sudo chown -R 1000:1000 ./gitea
 docker compose up -d gitea caddy
 
 ```

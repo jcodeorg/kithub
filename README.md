@@ -11,7 +11,14 @@ XServer VPSクラウド
 OS:Ubuntu 24.04
 セットアップスクリプト:Docker
 
-2. IPアドレス
+2. パケットフィルター
+80/443/22 を許可する
+そのためには、2段階の設定が必要
+・パケットフィルターを作成する
+・パケットフィルターを適用する
+
+3. IPアドレス
+DNS で以下を設定する
 * `gitea.j-code.org`（Gitea リポジトリ管理）
 * `ide.j-code.org`（WebAssembly/クライアント動作型 Web IDE）
 * `drone.j-code.org`（Drone CI サーバー）
