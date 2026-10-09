@@ -16,10 +16,10 @@
 * **VPSスペック(Xserver 格安プラン ):** 4コア / 4GB RAM / 150GB SSD（Ubuntu 22.04 LTS / 24.04 LTS）
 * **VPSスペック(Gemini推奨スペック):** 4コア / 8GB RAM / 100GB SSD（Ubuntu 22.04 LTS / 24.04 LTS）
 * **ドメイン設定:** 以下のサブドメインの A レコードを VPS の IP アドレスに向けておくこと
-* `gitea.example.com`（Gitea リポジトリ管理）
-* `ide.example.com`（WebAssembly/クライアント動作型 Web IDE）
-* `drone.example.com`（Drone CI サーバー）
-* `flash.example.com`（ESP32 Web Serial 書き込み用ツール）
+* `gitea.j-code.org`（Gitea リポジトリ管理）
+* `ide.j-code.org`（WebAssembly/クライアント動作型 Web IDE）
+* `drone.j-code.org`（Drone CI サーバー）
+* `flash.j-code.org`（ESP32 Web Serial 書き込み用ツール）
 
 
 
@@ -35,7 +35,7 @@ SSHでVPSにログインし、システムの更新および Docker / Docker Com
 sudo apt update && sudo apt upgrade -y
 
 # Dockerおよび必要な標準ツールのインストール
-sudo apt install -y curl git docker.io docker-compose-plugin
+# sudo apt install -y curl git docker.io docker-compose-plugin
 
 # Dockerサービスの起動と自動起動有効化
 sudo systemctl enable --now docker
@@ -56,23 +56,23 @@ cd ~/dev-env
 
 ```caddy
 # Gitea (リポジトリ管理)
-gitea.example.com {
+gitea.j-code.org {
     reverse_proxy gitea:3000
 }
 
 # Web IDE (クライアント型IDEの静的アセット配信)
-ide.example.com {
+ide.j-code.org {
     root * /usr/share/nginx/html
     file_server
 }
 
 # Drone CI (自動ビルド)
-drone.example.com {
+drone.j-code.org {
     reverse_proxy drone:80
 }
 
 # ESP Web Tools (Web Serial 書き込みUI)
-flash.example.com {
+flash.j-code.org {
     root * /usr/share/nginx/html
     file_server
 }
@@ -112,7 +112,7 @@ services:
     environment:
       - USER_UID=1000
       - USER_GID=1000
-      - GITEA__server__ROOT_URL=https://gitea.example.com/
+      - GITEA__server__ROOT_URL=https://gitea.j-code.org/
       - GITEA__server__SSH_PORT=2222
     volumes:
       - ./gitea:/var/lib/gitea
@@ -135,11 +135,11 @@ services:
     image: drone/drone:2
     restart: always
     environment:
-      - DRONE_GITEA_SERVER=https://gitea.example.com
+      - DRONE_GITEA_SERVER=https://gitea.j-code.org
       - DRONE_GITEA_CLIENT_ID=${GITEA_CLIENT_ID}
       - DRONE_GITEA_CLIENT_SECRET=${GITEA_CLIENT_SECRET}
       - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
-      - DRONE_SERVER_HOST=drone.example.com
+      - DRONE_SERVER_HOST=drone.j-code.org
       - DRONE_SERVER_PROTO=https
     volumes:
       - ./drone:/data
@@ -152,7 +152,7 @@ services:
     restart: always
     environment:
       - DRONE_RPC_PROTO=https
-      - DRONE_RPC_HOST=drone.example.com
+      - DRONE_RPC_HOST=drone.j-code.org
       - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
       - DRONE_RUNNER_CAPACITY=2  # 同時ビルド並列数を2件に絞りハングアップを防止
       - DRONE_RUNNER_NAME=vps-runner
@@ -186,10 +186,10 @@ docker compose up -d gitea caddy
 
 ```
 
-2. ブラウザで `[https://gitea.example.com](https://gitea.example.com)` にアクセスし、初期管理者を作成します。
+2. ブラウザで `[https://gitea.j-code.org](https://gitea.j-code.org)` にアクセスし、初期管理者を作成します。
 3. Gitea画面の右上アイコン > **[設定]** > **[アプリケーション]** > **[OAuth2アプリケーションの作成]** から以下を入力します。
 * **アプリケーション名:** `Drone CI`
-* **リダイレクトURI:** `[https://drone.example.com/login](https://drone.example.com/login)`
+* **リダイレクトURI:** `[https://drone.j-code.org/login](https://drone.j-code.org/login)`
 
 
 4. 発行された **Client ID** と **Client Secret** を確認します。
@@ -236,7 +236,7 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
 
 ```
 
-* **検証:** Chromebookから `[https://flash.example.com](https://flash.example.com)` にアクセスし、「Connect」ボタンからUSBシリアルポートが検出されることを確認します。
+* **検証:** Chromebookから `[https://flash.j-code.org](https://flash.j-code.org)` にアクセスし、「Connect」ボタンからUSBシリアルポートが検出されることを確認します。
 
 
 ---
