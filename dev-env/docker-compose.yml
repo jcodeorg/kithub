@@ -1,0 +1,71 @@
+networks:
+  dev-net:
+    driver: bridge
+
+services:
+  # --- リバースプロキシ (HTTPS自動化) ---
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./ide:/srv/ide:ro
+      - ./flash:/srv/flash:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - dev-net
+
+  # --- Gitリポジトリ管理 (Gitea) ---
+  gitea:
+    image: gitea/gitea:1.21-rootless
+    restart: always
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__ROOT_URL=https://gitea.j-code.org/
+      - GITEA__server__SSH_PORT=2222
+    volumes:
+      - ./gitea:/var/lib/gitea
+    ports:
+      - "2222:2222"
+    networks:
+      - dev-net
+
+  # --- 自動ビルド (Drone CI) ---
+  drone:
+    image: drone/drone:2
+    restart: always
+    environment:
+      - DRONE_GITEA_SERVER=https://gitea.j-code.org
+      - DRONE_GITEA_CLIENT_ID=${GITEA_CLIENT_ID}
+      - DRONE_GITEA_CLIENT_SECRET=${GITEA_CLIENT_SECRET}
+      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
+      - DRONE_SERVER_HOST=drone.j-code.org
+      - DRONE_SERVER_PROTO=https
+    volumes:
+      - ./drone:/data
+    networks:
+      - dev-net
+
+  # --- Drone CI Runner (一斉ビルド負荷制御) ---
+  drone-runner:
+    image: drone/drone-runner-docker:1
+    restart: always
+    environment:
+      - DRONE_RPC_PROTO=https
+      - DRONE_RPC_HOST=drone.j-code.org
+      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
+      - DRONE_RUNNER_CAPACITY=2  # 同時ビルド並列数を2件に絞りハングアップを防止
+      - DRONE_RUNNER_NAME=vps-runner
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - dev-net
+
+volumes:
+  caddy_data:
+  caddy_config:

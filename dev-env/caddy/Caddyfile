@@ -1,0 +1,21 @@
+# Gitea (リポジトリ管理)
+gitea.j-code.org {
+    reverse_proxy gitea:3000
+}
+
+# Web IDE (クライアント型IDEの静的アセット配信)
+ide.j-code.org {
+    root * /srv/ide
+    file_server
+}
+
+# Drone CI (自動ビルド)
+drone.j-code.org {
+    reverse_proxy drone:80
+}
+
+# ESP Web Tools (Web Serial 書き込みUI)
+flash.j-code.org {
+    root * /srv/flash
+    file_server
+}
