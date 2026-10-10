@@ -85,7 +85,7 @@ sudo systemctl reload ssh
 全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash
+mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download
 cd ~/dev-env
 
 ```
@@ -190,6 +190,8 @@ services:
       - DRONE_RUNNER_NAME=vps-runner
       # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
+      # 全パイプラインのステップに成果物の公開先(flash.j-code.org/download)を /publish としてマウントする
+      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
