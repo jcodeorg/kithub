@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>ESP32 ブラウザ書き込みツール</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@9/dist/web/install-button.js?module"></script>
+  <script type="module" src="https://unpkg.com/esp-web-tools@9.4.3/dist/web/install-button.js?module"></script>
   <style>
     body { font-family: sans-serif; text-align: center; padding: 2rem; background: #f4f6f8; }
     .card { background: white; max-width: 500px; margin: auto; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
@@ -12,8 +12,41 @@
 <body>
   <div class="card">
     <h2>ESP32 実機書き込み</h2>
-    <p>ChromebookとESP32をUSBケーブルで接続し、下のボタンを押してください。</p>
-    <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+    <p>ChromebookとESP32をUSBケーブルで接続し、書き込み対象を確認して、下のボタンを押してください。</p>
+    <label for="target">書き込み対象（オーナー名/リポジトリ名/バージョン）</label>
+    <input id="target" type="text" spellcheck="false" autocomplete="off" style="width:100%;box-sizing:border-box;margin:.5rem 0;padding:.5rem;font-size:1rem;">
+    <div id="button"></div>
+    <p id="error" style="color:#c00"></p>
   </div>
+  <script src="ewt-ja.js"></script>
+  <script>
+    // 例: https://flash.j-code.org/?repo=オーナー名/リポジトリ名&version=latest
+    const params = new URLSearchParams(location.search);
+    const input = document.getElementById('target');
+    const error = document.getElementById('error');
+    const button = document.getElementById('button');
+    const name = /^[\w.-]+$/;
+
+    input.value = params.get('repo') ? params.get('repo') + '/' + (params.get('version') || 'latest') : '';
+
+    // 入力が正しい場合だけ、その書き込み対象の manifest を使うボタンを作り直す
+    function update() {
+      button.replaceChildren();
+      error.textContent = '';
+      const parts = input.value.trim().split('/');
+      if (parts.length === 2) parts.push('latest');
+      const valid = parts.length === 3 && parts.every(p => name.test(p) && p !== '.' && p !== '..');
+      if (!valid) {
+        error.textContent = 'オーナー名/リポジトリ名/バージョン の形式で入力してください（バージョンは省略すると latest）。';
+        return;
+      }
+      const btn = document.createElement('esp-web-install-button');
+      btn.setAttribute('manifest', '/download/' + parts.join('/') + '/manifest.json');
+      button.appendChild(btn);
+    }
+
+    input.addEventListener('input', update);
+    update();
+  </script>
 </body>
 </html>
