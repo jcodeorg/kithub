@@ -76,7 +76,7 @@ sudo systemctl reload ssh
 全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash
+mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash
 cd ~/dev-env
 
 ```
@@ -145,6 +145,7 @@ services:
       - GITEA__server__SSH_PORT=2222
     volumes:
       - ./gitea:/var/lib/gitea
+      - ./gitea-config:/etc/gitea
     ports:
       - "2222:2222"
     networks:
@@ -191,12 +192,20 @@ volumes:
 4. **Gitea連携 & Drone OAuth設定:** 所要時間: 約10分.
 1. 最初に Gitea と リバースプロキシを起動します。
 Gitea (rootless イメージ) はUID 1000で動作するため、事前にデータディレクトリの所有者を変更しておかないと `/var/lib/gitea/git is not writable` で起動に失敗します。
+Gitea の設定ファイルは `/etc/gitea/app.ini` に保存されるため、データとは別に `./gitea-config` へ永続化します。既存環境でこの設定を追加する場合は、Compose ファイルを更新してコンテナを再作成する前に、現在のコンテナから設定ファイルをコピーしてください。
 
 ```bash
 cd ~/dev-env
-sudo chown -R 1000:1000 ./gitea
+sudo chown -R 1000:1000 ./gitea ./gitea-config
 docker compose up -d gitea caddy
 
+```
+
+既存環境で `./gitea-config:/etc/gitea` のマウントを追加する場合は、上記の起動前に次を実行して、現在使われている設定をホストへ退避します（初回構築では不要です）。
+
+```bash
+docker cp "$(docker compose ps -q gitea)":/etc/gitea/app.ini ./gitea-config/app.ini
+sudo chown 1000:1000 ./gitea-config/app.ini
 ```
 
 2. ブラウザで `https://gitea.j-code.org` にアクセスし、初期管理者を作成します。

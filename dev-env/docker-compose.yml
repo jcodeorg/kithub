@@ -1,6 +1,8 @@
 networks:
   dev-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1350"
 
 services:
   # --- リバースプロキシ (HTTPS自動化) ---
@@ -30,6 +32,7 @@ services:
       - GITEA__server__SSH_PORT=2222
     volumes:
       - ./gitea:/var/lib/gitea
+      - ./gitea-config:/etc/gitea
     ports:
       - "2222:2222"
     networks:
