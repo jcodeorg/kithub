@@ -2,7 +2,7 @@ networks:
   dev-net:
     driver: bridge
     driver_opts:
-      com.docker.network.driver.mtu: "1350"
+      com.docker.network.driver.mtu: "1400"
 
 services:
   # --- リバースプロキシ (HTTPS自動化) ---
@@ -64,6 +64,8 @@ services:
       - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
       - DRONE_RUNNER_CAPACITY=2  # 同時ビルド並列数を2件に絞りハングアップを防止
       - DRONE_RUNNER_NAME=vps-runner
+      # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
+      - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

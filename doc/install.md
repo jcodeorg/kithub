@@ -45,6 +45,15 @@ sudo systemctl enable --now docker
 
 ```
 
+   **Docker の MTU 設定（必須）:** VPS の NIC の MTU（Xserver VPS では 1442）より Docker ブリッジの既定 MTU（1500）が大きいと、大きなダウンロードがタイムアウトや `connection reset by peer` で失敗します。`/etc/docker/daemon.json` で既定ブリッジの MTU を下げます。Drone のパイプライン用ネットワークと `dev-net` には、`docker-compose.yml` 側で別途 MTU を指定します（`daemon.json` の `mtu` は既定の `bridge` にしか効きません）。
+
+```bash
+echo '{ "mtu": 1400 }' | sudo tee /etc/docker/daemon.json
+sudo dockerd --validate --config-file=/etc/docker/daemon.json
+sudo systemctl restart docker   # 実行中のコンテナとDroneのビルドは止まります
+
+```
+
    **一般ユーザーの作成と root ログインの無効化（推奨）:** root のまま運用すると、SSH への総当たり攻撃や操作ミスの被害が大きくなります。以降の作業は一般ユーザーで行います。
 
 ```bash
@@ -116,6 +125,8 @@ flash.j-code.org {
 networks:
   dev-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
 
 services:
   # --- リバースプロキシ (HTTPS自動化) ---
@@ -177,6 +188,8 @@ services:
       - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
       - DRONE_RUNNER_CAPACITY=2  # 同時ビルド並列数を2件に絞りハングアップを防止
       - DRONE_RUNNER_NAME=vps-runner
+      # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
+      - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
