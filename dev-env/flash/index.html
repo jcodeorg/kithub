@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <title>ESP32 ブラウザ書き込みツール</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@9.4.3/dist/web/install-button.js?module"></script>
+  <script type="module" id="ewt-script" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
     body { font-family: sans-serif; text-align: center; padding: 2rem; background: #f4f6f8; }
     .card { background: white; max-width: 500px; margin: auto; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .version { margin: 1rem 0 0; font-size: .75rem; color: #888; }
   </style>
 </head>
 <body>
@@ -17,7 +18,13 @@
     <input id="target" type="text" spellcheck="false" autocomplete="off" style="width:100%;box-sizing:border-box;margin:.5rem 0;padding:.5rem;font-size:1rem;">
     <div id="button"></div>
     <p id="error" style="color:#c00"></p>
+    <p class="version" id="version"></p>
   </div>
+  <script>
+    // 読み込む esp-web-tools のバージョンを、script の URL から取り出して表示する
+    const ewtVersion = document.getElementById('ewt-script').src.match(/esp-web-tools@([^/]+)/);
+    document.getElementById('version').textContent = 'esp-web-tools@' + (ewtVersion ? ewtVersion[1] : '不明');
+  </script>
   <script src="ewt-ja.js"></script>
   <script>
     // 例: https://flash.j-code.org/?repo=オーナー名/リポジトリ名&version=latest
