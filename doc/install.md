@@ -85,7 +85,7 @@ sudo systemctl reload ssh
 全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download
+mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/cache
 cd ~/dev-env
 
 ```
@@ -190,8 +190,8 @@ services:
       - DRONE_RUNNER_NAME=vps-runner
       # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      # 全パイプラインのステップに成果物の公開先(flash.j-code.org/download)を /publish としてマウントする
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish
+      # 全パイプラインのステップに、成果物の公開先(flash.j-code.org/download)を /publish、ビルドキャッシュを /ci-cache としてマウントする
+      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -292,7 +292,7 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
 
 
 * **3. リポジトリ用ビルド定義とマニフェスト作成**
-* 生徒が利用する `.drone.yml`（C++コンパイル定義）の配備。
+* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`/publish` と `/ci-cache` は drone-runner の `DRONE_RUNNER_VOLUMES` でマウント。VPS で `mkdir -p ~/dev-env/cache` が必要）。
 * ESP Web Tools書き込み用の `manifest.json`（バイナリ配置URL等の定義）の用意。
 
 

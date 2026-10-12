@@ -1,0 +1,131 @@
+# ESP32 (arduino-cli) ビルド → flash.j-code.org へ公開 → タグ時に Gitea リリース
+#
+# 前提 (dev-env/docker-compose.yml の drone-runner に設定済み):
+#   DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
+#   - /publish  : flash.j-code.org/download の実体
+#   - /ci-cache : ビルドキャッシュ (arduino-cli のコア/ライブラリ/ビルド成果)
+# ランナー側でマウントするため、リポジトリの Trusted 設定や `volumes: host:` は不要。
+kind: pipeline
+type: docker
+name: build-and-release-esp32
+
+trigger:
+  branch:
+    - main
+    - master
+  event:
+    - push
+    - pull_request
+    - tag
+
+steps:
+  # --- 1. arduino-cli の準備、ボード・ライブラリ導入、ビルド ---
+  - name: build-firmware
+    image: python:3.11-slim
+    environment:
+      HOME: /root
+    commands:
+      - sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get -o Acquire::Retries=5 update && apt-get install -y curl git
+      # arduino-cli のインストール
+      - curl -fsSL --ipv4 --connect-timeout 20 --retry 5 --retry-delay 5 --retry-all-errors https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz | tar -xz -C /usr/local/bin arduino-cli
+      - arduino-cli version
+      # esptool.py が必要とする Python モジュール
+      - pip install --no-cache-dir pyserial
+      # キャッシュ領域 (/ci-cache) を使って ESP32 コア 2.0.14 を導入
+      - mkdir -p /ci-cache/data /ci-cache/user/libraries /ci-cache/build
+      - arduino-cli config init --overwrite
+      - arduino-cli config set directories.data /ci-cache/data
+      - arduino-cli config set directories.user /ci-cache/user
+      - arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+      - arduino-cli core update-index
+      - arduino-cli core install esp32:esp32@2.0.14
+      # ライブラリのインストール
+      - |
+        if [ -d /ci-cache/user/libraries/ESP32-A2DP/.git ]; then
+          git -C /ci-cache/user/libraries/ESP32-A2DP pull --ff-only
+        elif [ -e /ci-cache/user/libraries/ESP32-A2DP ]; then
+          echo "Cached ESP32-A2DP directory is not a Git repository" >&2
+          exit 1
+        else
+          git clone --depth 1 https://github.com/pschatzmann/ESP32-A2DP.git /ci-cache/user/libraries/ESP32-A2DP
+        fi
+      - arduino-cli lib install "U8g2"
+      - arduino-cli lib install "Adafruit AHTX0"
+      - arduino-cli lib install "BH1750"
+      - arduino-cli lib install "Adafruit NeoPixel"
+      # スケッチのコンパイル
+      - |
+        arduino-cli compile \
+          --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
+          --build-path build_temp \
+          --build-cache-path /ci-cache/build \
+          --output-dir build \
+          firmware/firmware.ino
+      # バイナリファイル名の正規化 (リネーム)
+      - |
+        if [ -f build/firmware.ino.bootloader.bin ]; then
+          mv build/firmware.ino.bootloader.bin build/bootloader.bin
+        fi
+        if [ -f build/firmware.ino.partitions.bin ]; then
+          mv build/firmware.ino.partitions.bin build/partitions.bin
+        fi
+        if [ -f build/firmware.ino.bin ]; then
+          mv build/firmware.ino.bin build/firmware.bin
+        fi
+
+  # --- 2. flash.j-code.org/download へ成果物を公開 ---
+  # 公開先: /download/<オーナー名>/<リポジトリ名>/latest/ (ブランチPush時)
+  #         /download/<オーナー名>/<リポジトリ名>/<タグ>/    (タグ時)
+  - name: publish-to-flash
+    image: alpine:3
+    commands:
+      - |
+        if [ "$DRONE_BUILD_EVENT" = "tag" ]; then
+          VERSION="$DRONE_TAG"
+        else
+          VERSION="latest"
+        fi
+        DEST="/publish/$DRONE_REPO/$VERSION"
+        mkdir -p "$DEST"
+        cp build/bootloader.bin build/partitions.bin build/firmware.bin "$DEST/"
+        BOOTLOADER_OFFSET=$((0x1000))
+        PARTITIONS_OFFSET=$((0x8000))
+        FIRMWARE_OFFSET=$((0x10000))
+        cat > "$DEST/manifest.json" <<EOF
+        {
+          "name": "firmware",
+          "version": "$VERSION",
+          "new_install_prompt_erase": true,
+          "builds": [
+            {
+              "chipFamily": "ESP32",
+              "parts": [
+                { "path": "bootloader.bin", "offset": $BOOTLOADER_OFFSET },
+                { "path": "partitions.bin", "offset": $PARTITIONS_OFFSET },
+                { "path": "firmware.bin", "offset": $FIRMWARE_OFFSET }
+              ]
+            }
+          ]
+        }
+        EOF
+        chmod -R a+rX "/publish/$DRONE_REPO_OWNER"
+        echo "公開先: https://flash.j-code.org/download/${DEST#/publish/}/"
+    when:
+      event:
+        - push
+        - tag
+
+  # --- 3. タグPush時に Gitea へリリース作成 ＆ バイナリ添付 ---
+  - name: release-to-gitea
+    image: plugins/gitea-release
+    settings:
+      base_url: https://gitea.j-code.org
+      api_key:
+        from_secret: gitea_token # Drone Secrets に登録した Access Token
+      files:
+        - build/bootloader.bin
+        - build/partitions.bin
+        - build/firmware.bin
+    when:
+      event:
+        - tag

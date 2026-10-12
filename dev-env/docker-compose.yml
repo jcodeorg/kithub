@@ -66,8 +66,8 @@ services:
       - DRONE_RUNNER_NAME=vps-runner
       # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      # 全パイプラインのステップに成果物の公開先(flash.j-code.org/download)を /publish としてマウントする
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish
+      # 全パイプラインのステップに、成果物の公開先(flash.j-code.org/download)を /publish、ビルドキャッシュを /ci-cache としてマウントする
+      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
