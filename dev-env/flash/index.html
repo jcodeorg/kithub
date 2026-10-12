@@ -2,58 +2,176 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ESP32 ブラウザ書き込みツール</title>
-  <script type="module" id="ewt-script" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
     body { font-family: sans-serif; text-align: center; padding: 2rem; background: #f4f6f8; }
-    .card { background: white; max-width: 500px; margin: auto; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-    .version { margin: 1rem 0 0; font-size: .75rem; color: #888; }
+    .card { background: white; max-width: 560px; margin: auto; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: left; }
+    h2 { text-align: center; }
+    label { display: block; margin-top: 1rem; font-size: .9rem; }
+    input[type=text], select { width: 100%; box-sizing: border-box; margin-top: .3rem; padding: .5rem; font-size: 1rem; }
+    .check { display: flex; align-items: center; gap: .5rem; }
+    .check input { margin: 0; }
+    button { margin-top: 1.5rem; width: 100%; padding: .7rem; font-size: 1rem; color: #fff; background: #03a9f4; border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #bbb; cursor: default; }
+    progress { width: 100%; margin-top: 1rem; }
+    #status { margin: .3rem 0 0; font-size: .9rem; }
+    #error { color: #c00; }
+    #log { margin-top: 1rem; height: 12rem; overflow: auto; padding: .5rem; font-size: .75rem; background: #111; color: #ddd; white-space: pre-wrap; }
+    .version { margin: 1rem 0 0; font-size: .75rem; color: #888; text-align: center; }
   </style>
 </head>
 <body>
   <div class="card">
     <h2>ESP32 実機書き込み</h2>
-    <p>ChromebookとESP32をUSBケーブルで接続し、書き込み対象を確認して、下のボタンを押してください。</p>
+    <p>ChromebookとESP32をUSBケーブルで接続し、書き込み対象を確認して、「接続して書き込む」を押してください。</p>
+
     <label for="target">書き込み対象（オーナー名/リポジトリ名/バージョン）</label>
-    <input id="target" type="text" spellcheck="false" autocomplete="off" style="width:100%;box-sizing:border-box;margin:.5rem 0;padding:.5rem;font-size:1rem;">
-    <div id="button"></div>
-    <p id="error" style="color:#c00"></p>
+    <input id="target" type="text" spellcheck="false" autocomplete="off">
+
+    <label for="baud">書き込み速度（通信速度）</label>
+    <select id="baud">
+      <option value="115200">115200 bps（低速・最も安定）</option>
+      <option value="230400">230400 bps</option>
+      <option value="460800">460800 bps</option>
+      <option value="921600" selected>921600 bps（推奨）</option>
+    </select>
+
+    <label class="check"><input id="erase" type="checkbox">書き込み前にフラッシュを全消去する（保存済みの設定も消えます）</label>
+
+    <button id="start" type="button">接続して書き込む</button>
+    <progress id="progress" value="0" max="100" hidden></progress>
+    <p id="status"></p>
+    <p id="error"></p>
+    <pre id="log" hidden></pre>
     <p class="version" id="version"></p>
   </div>
-  <script>
-    // 読み込む esp-web-tools のバージョンを、script の URL から取り出して表示する
-    const ewtVersion = document.getElementById('ewt-script').src.match(/esp-web-tools@([^/]+)/);
-    document.getElementById('version').textContent = 'esp-web-tools@' + (ewtVersion ? ewtVersion[1] : '不明');
-  </script>
-  <script src="ewt-ja.js"></script>
-  <script>
+
+  <script type="module">
+    const ESPTOOL_URL = 'https://unpkg.com/esptool-js@0.7.0/bundle.js';
     // 例: https://flash.j-code.org/?repo=オーナー名/リポジトリ名&version=latest
     const params = new URLSearchParams(location.search);
     const input = document.getElementById('target');
-    const error = document.getElementById('error');
-    const button = document.getElementById('button');
+    const startButton = document.getElementById('start');
+    const progress = document.getElementById('progress');
+    const statusText = document.getElementById('status');
+    const errorText = document.getElementById('error');
+    const log = document.getElementById('log');
     const name = /^[\w.-]+$/;
 
+    document.getElementById('version').textContent =
+      'esptool-js@' + (ESPTOOL_URL.match(/esptool-js@([^/]+)/)?.[1] ?? '不明');
     input.value = params.get('repo') ? params.get('repo') + '/' + (params.get('version') || 'latest') : '';
 
-    // 入力が正しい場合だけ、その書き込み対象の manifest を使うボタンを作り直す
-    function update() {
-      button.replaceChildren();
-      error.textContent = '';
+    function targetPath() {
       const parts = input.value.trim().split('/');
       if (parts.length === 2) parts.push('latest');
       const valid = parts.length === 3 && parts.every(p => name.test(p) && p !== '.' && p !== '..');
-      if (!valid) {
-        error.textContent = 'オーナー名/リポジトリ名/バージョン の形式で入力してください（バージョンは省略すると latest）。';
-        return;
-      }
-      const btn = document.createElement('esp-web-install-button');
-      btn.setAttribute('manifest', '/download/' + parts.join('/') + '/manifest.json');
-      button.appendChild(btn);
+      return valid ? parts.join('/') : null;
     }
 
-    input.addEventListener('input', update);
-    update();
+    function writeLog(text) {
+      log.hidden = false;
+      log.textContent += text;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function fetchBinary(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(url + ' の取得に失敗しました（' + res.status + '）');
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    async function flash() {
+      errorText.textContent = '';
+      statusText.textContent = '';
+      log.textContent = '';
+      progress.hidden = true;
+
+      const path = targetPath();
+      if (!path) {
+        errorText.textContent = 'オーナー名/リポジトリ名/バージョン の形式で入力してください（バージョンは省略すると latest）。';
+        return;
+      }
+      if (!('serial' in navigator)) {
+        errorText.textContent = 'このブラウザは Web Serial に対応していません。Google Chrome または Microsoft Edge を使用してください。';
+        return;
+      }
+
+      startButton.disabled = true;
+      let transport;
+      try {
+        const { ESPLoader, Transport } = await import(ESPTOOL_URL);
+
+        statusText.textContent = 'ポートを選択してください';
+        const port = await navigator.serial.requestPort();
+
+        statusText.textContent = '書き込みファイルを取得中';
+        const base = '/download/' + path + '/';
+        const manifest = await (async () => {
+          const res = await fetch(base + 'manifest.json', { cache: 'no-store' });
+          if (!res.ok) throw new Error('manifest.json の取得に失敗しました（' + res.status + '）');
+          return res.json();
+        })();
+
+        transport = new Transport(port, false);
+        const loader = new ESPLoader({
+          transport,
+          baudrate: Number(document.getElementById('baud').value),
+          romBaudrate: 115200,
+          terminal: {
+            clean: () => { log.textContent = ''; },
+            writeLine: (data) => writeLog(data + '\n'),
+            write: (data) => writeLog(data),
+          },
+        });
+
+        statusText.textContent = 'デバイスに接続中';
+        await loader.main();
+        const chip = loader.chip.CHIP_NAME;
+
+        const build = (manifest.builds || []).find(b => b.chipFamily === chip);
+        if (!build) throw new Error('この manifest は ' + chip + ' に対応していません。');
+        const fileArray = await Promise.all(build.parts.map(async (part) => ({
+          data: await fetchBinary(new URL(part.path, location.origin + base).toString()),
+          address: part.offset,
+        })));
+
+        progress.hidden = false;
+        progress.value = 0;
+        statusText.textContent = '書き込み中（' + chip + '）';
+        const total = fileArray.reduce((sum, f) => sum + f.data.length, 0);
+        const written = fileArray.map(() => 0);
+        await loader.writeFlash({
+          fileArray,
+          flashMode: 'keep',
+          flashFreq: 'keep',
+          flashSize: 'keep',
+          eraseAll: document.getElementById('erase').checked,
+          compress: true,
+          reportProgress: (index, done, size) => {
+            // 圧縮書き込みでは done/size がファイルごとの進捗になる
+            written[index] = fileArray[index].data.length * (done / size);
+            progress.value = Math.min(100, (written.reduce((a, b) => a + b, 0) / total) * 100);
+          },
+        });
+
+        progress.value = 100;
+        await loader.after('hard_reset');
+        statusText.textContent = '書き込みが完了しました。デバイスをリセットしました。';
+      } catch (e) {
+        console.error(e);
+        statusText.textContent = '';
+        errorText.textContent = e.name === 'NotFoundError'
+          ? 'ポートが選択されませんでした。'
+          : '書き込みに失敗しました: ' + (e.message || e);
+      } finally {
+        try { await transport?.disconnect(); } catch { /* 切断済み */ }
+        startButton.disabled = false;
+      }
+    }
+
+    startButton.addEventListener('click', flash);
   </script>
 </body>
 </html>
