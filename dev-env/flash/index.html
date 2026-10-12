@@ -26,8 +26,8 @@
     <h2>ESP32 実機書き込み</h2>
     <p>ChromebookとESP32をUSBケーブルで接続し、書き込み対象を確認して、「接続して書き込む」を押してください。</p>
 
-    <label for="target">書き込み対象（オーナー名/リポジトリ名/バージョン）</label>
-    <input id="target" type="text" spellcheck="false" autocomplete="off">
+    <label for="target">書き込み対象（manifest.json のパス）</label>
+    <input id="target" type="text" spellcheck="false" autocomplete="off" placeholder="/download/オーナー名/リポジトリ名/latest/manifest.json">
 
     <label for="baud">書き込み速度（通信速度）</label>
     <select id="baud">
@@ -49,7 +49,7 @@
 
   <script type="module">
     const ESPTOOL_URL = 'https://unpkg.com/esptool-js@0.7.0/bundle.js';
-    // 例: https://flash.j-code.org/?repo=オーナー名/リポジトリ名&version=latest
+    // 例: https://flash.j-code.org/?url=/download/オーナー名/リポジトリ名/latest/manifest.json（ドメイン省略可）
     const params = new URLSearchParams(location.search);
     const input = document.getElementById('target');
     const startButton = document.getElementById('start');
@@ -57,17 +57,18 @@
     const statusText = document.getElementById('status');
     const errorText = document.getElementById('error');
     const log = document.getElementById('log');
-    const name = /^[\w.-]+$/;
 
     document.getElementById('version').textContent =
       'esptool-js@' + (ESPTOOL_URL.match(/esptool-js@([^/]+)/)?.[1] ?? '不明');
-    input.value = params.get('repo') ? params.get('repo') + '/' + (params.get('version') || 'latest') : '';
+    input.value = params.get('url') || '';
 
-    function targetPath() {
-      const parts = input.value.trim().split('/');
-      if (parts.length === 2) parts.push('latest');
-      const valid = parts.length === 3 && parts.every(p => name.test(p) && p !== '.' && p !== '..');
-      return valid ? parts.join('/') : null;
+    function manifestUrl() {
+      try {
+        const u = new URL(input.value.trim(), location.href);
+        return u.protocol === 'https:' || u.protocol === 'http:' ? u : null;
+      } catch {
+        return null;
+      }
     }
 
     function writeLog(text) {
@@ -88,9 +89,9 @@
       log.textContent = '';
       progress.hidden = true;
 
-      const path = targetPath();
-      if (!path) {
-        errorText.textContent = 'オーナー名/リポジトリ名/バージョン の形式で入力してください（バージョンは省略すると latest）。';
+      const manifestLocation = manifestUrl();
+      if (!manifestLocation) {
+        errorText.textContent = 'manifest.json のパス（/download/…/manifest.json）を入力してください。';
         return;
       }
       if (!('serial' in navigator)) {
@@ -107,9 +108,8 @@
         const port = await navigator.serial.requestPort();
 
         statusText.textContent = '書き込みファイルを取得中';
-        const base = '/download/' + path + '/';
         const manifest = await (async () => {
-          const res = await fetch(base + 'manifest.json', { cache: 'no-store' });
+          const res = await fetch(manifestLocation, { cache: 'no-store' });
           if (!res.ok) throw new Error('manifest.json の取得に失敗しました（' + res.status + '）');
           return res.json();
         })();
@@ -133,7 +133,7 @@
         const build = (manifest.builds || []).find(b => b.chipFamily === chip);
         if (!build) throw new Error('この manifest は ' + chip + ' に対応していません。');
         const fileArray = await Promise.all(build.parts.map(async (part) => ({
-          data: await fetchBinary(new URL(part.path, location.origin + base).toString()),
+          data: await fetchBinary(new URL(part.path, manifestLocation).toString()),
           address: part.offset,
         })));
 
