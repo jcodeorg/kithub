@@ -71,10 +71,10 @@ steps:
       - arduino-cli lib install "BH1750"
       - arduino-cli lib install "Adafruit NeoPixel"
       # スケッチのコンパイル
+      # --build-path は指定しない (指定すると共有 build cache が使われず、毎回フルビルドになる)
       - |
         arduino-cli compile \
           --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
-          --build-path build_temp \
           --output-dir build \
           firmware/firmware.ino
       # バイナリファイル名の正規化 (リネーム)
