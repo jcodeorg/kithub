@@ -4,6 +4,7 @@
 #   DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
 #   - /publish  : flash.j-code.org/download の実体
 #   - /ci-cache : ビルドキャッシュ (arduino-cli のコア/ライブラリ/ビルド成果)
+#                 同時に複数ビルドが走っても壊れないよう、flock で直列化しています。
 #
 # 注意: 次の更新はキャッシュ側にあるため、手動で行います。
 #   - arduino-cli を更新するには、ホストの /home/kithub/dev-env/cache/bin を削除します。
@@ -34,6 +35,11 @@ steps:
       PYTHONPATH: /ci-cache/pylib
     commands:
       - mkdir -p /ci-cache/bin /ci-cache/data /ci-cache/user/libraries /ci-cache/build
+      # 共有キャッシュを触る処理 (導入・更新・コンパイル) を、複数ビルド間で直列化する。
+      # fd 9 のロックはこのステップのシェルが終了すると自動的に解放される (異常終了時も)
+      - exec 9>/ci-cache/.build.lock
+      - echo "他のビルドのキャッシュ使用が終わるまで待機します (最大30分)"
+      - flock -w 1800 9
       # arduino-cli はキャッシュに無いときだけダウンロード (更新したい場合は /ci-cache/bin を削除)
       - |
         if [ ! -x /ci-cache/bin/arduino-cli ]; then
