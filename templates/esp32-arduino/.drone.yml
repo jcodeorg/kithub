@@ -1,8 +1,8 @@
-# ESP32 (arduino-cli) ビルド → flash.j-code.org へ公開 → タグ時に Gitea リリース
+# ESP32 (arduino-cli) ビルド → users.j-code.org へ公開 → タグ時に Gitea リリース
 #
 # 前提 (dev-env/docker-compose.yml の drone-runner に設定済み):
-#   DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
-#   - /publish  : flash.j-code.org/download の実体
+#   DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
+#   - /publish  : users.j-code.org のドキュメントルート
 #   - /ci-cache : ビルドキャッシュ (arduino-cli のコア/ライブラリ/ビルド成果)
 #                 同時に複数ビルドが走っても壊れないよう、flock で直列化しています。
 #
@@ -95,10 +95,10 @@ steps:
           mv build/firmware.ino.bin build/firmware.bin
         fi
 
-  # --- 2. flash.j-code.org/download へ成果物を公開 ---
-  # 公開先: /download/<オーナー名>/<リポジトリ名>/latest/ (ブランチPush時)
-  #         /download/<オーナー名>/<リポジトリ名>/<タグ>/    (タグ時)
-  - name: publish-to-flash
+  # --- 2. users.j-code.org へ成果物を公開 ---
+  # 公開先: /<オーナー名>/<リポジトリ名>/latest/ (ブランチPush時)
+  #         /<オーナー名>/<リポジトリ名>/<タグ>/    (タグ時)
+  - name: publish-to-pages
     image: alpine:3
     commands:
       - |
@@ -131,7 +131,7 @@ steps:
         }
         EOF
         chmod -R a+rX "/publish/$DRONE_REPO_OWNER"
-        echo "公開先: https://flash.j-code.org/download/${DEST#/publish/}/"
+        echo "公開先: https://users.j-code.org/${DEST#/publish/}/"
     when:
       event:
         - push

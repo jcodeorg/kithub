@@ -15,7 +15,7 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile
       - ./ide:/srv/ide:ro
-      - ./flash:/srv/flash:ro
+      - ./pages:/srv/pages:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -86,7 +86,7 @@ services:
       - DRONE_RUNNER_CAPACITY=2
       - DRONE_RUNNER_NAME=vps-runner
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
+      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

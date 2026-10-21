@@ -17,9 +17,9 @@
 * **VPSスペック(Gemini推奨スペック):** 4コア / 8GB RAM / 100GB SSD（Ubuntu 22.04 LTS / 24.04 LTS）
 * **ドメイン設定:** 以下のサブドメインの A レコードを VPS の IP アドレスに向けておくこと
 * `gitea.j-code.org`（Gitea リポジトリ管理）
-* `ide.j-code.org`（WebAssembly/クライアント動作型 Web IDE）
 * `drone.j-code.org`（Drone CI サーバー）
-* `flash.j-code.org`（ESP32 Web Serial 書き込み用ツール）
+
+* `users.j-code.org`（CIビルド成果物の配信）
 * **VPS事業者側のファイアウォール:** TCP **80 / 443 / 22**（Giteaの SSH を使う場合は 2222 も）の受信を許可しておくこと（Xserver VPS では「パケットフィルター設定」で「Web」と「SSH」を追加）。80番が塞がっていると、Caddy が Let's Encrypt の証明書を取得できません。
 
 
@@ -85,12 +85,12 @@ sudo systemctl reload ssh
 全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/cache
+mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/pages ~/dev-env/cache
 cd ~/dev-env
 
 ```
 
-`caddy/Caddyfile` を作成します（`j-code.org` はお使いのドメインに書き換えてください）。`ide` と `flash` の静的ファイルは、Caddy が `/srv/ide`、`/srv/flash`（次の手順で `./ide`、`./flash` をマウント）から直接配信します。
+`caddy/Caddyfile` を作成します（`j-code.org` はお使いのドメインに書き換えてください）。`ide`、`flash`、CI成果物の静的ファイルは、それぞれ Caddy が `/srv/ide`、`/srv/flash`、`/srv/pages`（次の手順で `./ide`、`./flash`、`./pages` をマウント）から直接配信します。
 
 ```caddy
 # Gitea (リポジトリ管理)
@@ -112,6 +112,12 @@ drone.j-code.org {
 # ESP Web Tools (Web Serial 書き込みUI)
 flash.j-code.org {
     root * /srv/flash
+    file_server
+}
+
+# CI成果物の静的配信
+users.j-code.org {
+    root * /srv/pages
     file_server
 }
 
@@ -140,6 +146,7 @@ services:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile
       - ./ide:/srv/ide:ro
       - ./flash:/srv/flash:ro
+      - ./pages:/srv/pages:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -190,8 +197,8 @@ services:
       - DRONE_RUNNER_NAME=vps-runner
       # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      # 全パイプラインのステップに、成果物の公開先(flash.j-code.org/download)を /publish、ビルドキャッシュを /ci-cache としてマウントする
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/flash/download:/publish,/home/kithub/dev-env/cache:/ci-cache
+      # 全パイプラインのステップに、成果物の公開先(users.j-code.org)を /publish、ビルドキャッシュを /ci-cache としてマウントする
+      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -283,7 +290,7 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
 本インストールガイドの範囲外となる、事前・事後で必要となる周辺作業です。
 
 * **1. ドメイン・DNSの設定**
-* 外部DNS管理画面でサブドメイン4種（`gitea`, `ide`, `drone`, `flash`）の A レコードをVPSのパブリックIPへ紐付ける作業。
+* 外部DNS管理画面でサブドメイン5種（`gitea`, `ide`, `drone`, `flash`, `pages`）の A レコードをVPSのパブリックIPへ紐付ける作業。
 
 
 * **2. サーバー基本セキュリティ設定**
@@ -292,7 +299,8 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
 
 
 * **3. リポジトリ用ビルド定義とマニフェスト作成**
-* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`/publish` と `/ci-cache` は drone-runner の `DRONE_RUNNER_VOLUMES` でマウント。VPS で `mkdir -p ~/dev-env/cache` が必要）。
+* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`/publish` と `/ci-cache` は drone-runner の `DRONE_RUNNER_VOLUMES` でマウント。VPS で `mkdir -p ~/dev-env/pages ~/dev-env/cache` が必要）。
+* CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチPush時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信する。
 * ESP Web Tools書き込み用の `manifest.json`（バイナリ配置URL等の定義）の用意。
 
 

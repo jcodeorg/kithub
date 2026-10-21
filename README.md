@@ -36,7 +36,9 @@ DNS で以下を設定する
 * `gitea.j-code.org`（Gitea リポジトリ管理）
 * `ide.j-code.org`（WebAssembly/クライアント動作型 Web IDE）
 * `drone.j-code.org`（Drone CI サーバー）
-* `flash.j-code.org`（ESP32 Web Serial 書き込み用ツール）
+* `users.j-code.org`（Drone CIで生成したビルド成果物の配信）
+
+ESP32のビルド成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチPush時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）から取得できます。
 
 4. Gitea を起動
 
