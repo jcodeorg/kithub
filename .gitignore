@@ -1,4 +1,5 @@
 .env
+.r2.env
 dev-env/gitea/
 dev-env/gitea-config/
 dev-env/cache/

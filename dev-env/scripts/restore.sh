@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# R2 のバックアップから Gitea / Drone / 設定一式を復元して起動する。bootstrap.sh の後に実行する。
+# 使い方: restore.sh [--force] [バックアップ名]
+#   --force      : 既存の Gitea / Drone のデータを削除してやり直す (リハーサル後の本番用)
+#   バックアップ名: 省略すると latest
+# drone-runner は、DNS 切り替え前に旧サーバーのジョブを奪わないよう、ここでは起動しない。
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+FORCE=false
+if [ "${1:-}" = "--force" ]; then FORCE=true; shift; fi
+TS="${1:-$(rclone cat "R2:$R2_BACKUP_BUCKET/latest" | tr -d '[:space:]')}"
+SRC="R2:$R2_BACKUP_BUCKET/$TS"
+echo "復元するバックアップ: $TS"
+
+cd "$DEV_ENV_DIR"
+
+# pages が R2 でないと、ローカルディスクに成果物が溜まるため中止する
+if ! findmnt -n -T "$DEV_ENV_DIR/pages" -o FSTYPE | grep -q 'fuse.s3fs'; then
+  echo "pages が R2 にマウントされていません。先に bootstrap.sh を実行してください" >&2
+  exit 1
+fi
+
+# 既存データがある場合は、--force のときだけ削除する (誤って上書きしない)
+if [ -d gitea ] && [ -n "$(sudo ls -A gitea)" ]; then
+  if ! $FORCE; then
+    echo "既存のデータがあります。削除してやり直す場合は --force を付けてください" >&2
+    exit 1
+  fi
+  if [ -f docker-compose.yml ]; then docker compose down -v; fi
+  sudo rm -rf gitea gitea-config drone postgres_data
+fi
+
+# ファイル一式を展開する
+rclone cat "$SRC/files.tgz" | sudo tar -xzf - -C "$DEV_ENV_DIR"
+
+# 復元元と UID / パスが違っても動くように所有者と .env を整える
+sudo chown -R 1000:1000 gitea gitea-config
+for p in docker-compose.yml .env caddy ide flash; do
+  if [ -e "$p" ]; then sudo chown -R "$(id -u):$(id -g)" "$p"; fi
+done
+chmod 600 .env
+sed -i '/^DEV_ENV_DIR=/d' .env
+echo "DEV_ENV_DIR=$DEV_ENV_DIR" >> .env
+mkdir -p cache
+
+# DB だけ起動し、接続できるまで待ってからダンプを復元する
+docker compose up -d db
+# 初期化中の一時サーバーは TCP で待ち受けないため、TCP で接続確認する
+until docker compose exec -T db pg_isready -h 127.0.0.1 -U gitea -d gitea >/dev/null 2>&1; do sleep 2; done
+rclone cat "$SRC/gitea.pgdump" | docker compose exec -T db pg_restore -U gitea -d gitea --no-owner --exit-on-error
+
+# Caddy の証明書ボリュームを復元する (ボリュームを作るため、先に起動せず作成だけ行う)
+docker compose up --no-start caddy
+CADDY_VOL="$(docker volume ls -q | grep -m1 'caddy_data$' || true)"
+if [ -n "$CADDY_VOL" ] && rclone lsf "$SRC/caddy_data.tgz" >/dev/null 2>&1; then
+  rclone cat "$SRC/caddy_data.tgz" | docker run --rm -i -v "$CADDY_VOL:/data" alpine tar -xzf - -C /data
+fi
+
+# drone-runner 以外を起動し、Gitea が応答して管理者が見えることを確認する (最大5分)
+docker compose up -d gitea drone caddy
+
+echo "Gitea の起動を待っています"
+for _ in $(seq 1 60); do
+  if docker compose exec -T gitea wget -qO- http://localhost:3000/api/healthz >/dev/null 2>&1; then
+    echo "Gitea 起動 OK"
+    docker compose exec -T gitea gitea admin user list --admin
+    echo "復元完了。DNS 切り替えまで drone-runner は起動していません"
+    exit 0
+  fi
+  sleep 5
+done
+echo "Gitea が起動しません。docker compose logs gitea を確認してください" >&2
+exit 1

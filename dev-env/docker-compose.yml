@@ -32,7 +32,7 @@ services:
     restart: always
     environment:
       - POSTGRES_USER=gitea
-      - POSTGRES_PASSWORD=gitea_secure_password # 適切なパスワードに変更してください
+      - POSTGRES_PASSWORD=${DB_PASSWORD} # .env で管理 (scripts/init-gitea.sh または rotate-secrets.sh が生成)
       - POSTGRES_DB=gitea
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
@@ -47,13 +47,16 @@ services:
       - USER_UID=1000
       - USER_GID=1000
       - GITEA__server__ROOT_URL=https://gitea.j-code.org/
+      - GITEA__server__DOMAIN=gitea.j-code.org
       - GITEA__server__SSH_PORT=2222
+      # 初期設定画面を省略する (管理者は scripts/init-gitea.sh が作成する)
+      - GITEA__security__INSTALL_LOCK=true
       # PostgreSQL接続設定（環境変数による初期化・指定）
       - GITEA__database__DB_TYPE=postgres
       - GITEA__database__HOST=db:5432
       - GITEA__database__NAME=gitea
       - GITEA__database__USER=gitea
-      - GITEA__database__PASSWD=gitea_secure_password # dbサービスと同じパスワードを設定
+      - GITEA__database__PASSWD=${DB_PASSWORD} # dbサービスと同じパスワード
     volumes:
       - ./gitea:/var/lib/gitea
       - ./gitea-config:/etc/gitea

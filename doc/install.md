@@ -1,331 +1,254 @@
-# 🛠️ **【構築手順書】Chromebook向けブラウザ開発環境 VPSセットアップガイド**
+# 🛠️ **【構築・引っ越し手順書】Chromebook向けブラウザ開発環境 VPSセットアップガイド**
+
+新規構築も引っ越しも、人手が必要なのは **R2 のトークン作成・VPS の契約・DNS の変更・パスワードの保管** だけです。それ以外はスクリプト（[dev-env/scripts/](../dev-env/scripts)）が行います。
+
+| 作業 | 担当 |
+|---|---|
+| R2 バケット・トークンの作成、VPS 契約、パケットフィルター、DNS 変更 | 人 |
+| 一般ユーザー作成 | `create-user.sh` |
+| Docker / MTU / スワップ / R2 マウント / 設定ファイル配置 / SSH 保護 | `bootstrap.sh` |
+| Gitea 起動、管理者作成、Drone の OAuth 作成、全サービス起動（新規のみ） | `init-gitea.sh` |
+| バックアップ / 復元（引っ越しのみ） | `backup.sh` / `restore.sh` |
+| パスワード・トークンの入れ替え（引っ越しのみ） | `rotate-secrets.sh` |
+| DNS 反映待ち、drone-runner 起動、疎通確認（引っ越しのみ） | `go-live.sh` |
+
+**目安時間:** 新規構築 約30分 / 引っ越し 約40分（DNS の TTL を下げる待ち時間を除く）
 
 ---
 
-## ⏱️ 作業予定時間の目安
+## 1. 動作環境
 
-* **本手順の作業時間：** **合計 約35分**
-* **事前・事後作業（本手順外）：** 約20〜30分（DNS設定・運用セキュリティ設定など）
-
----
-
-## 1. 動作環境と事前準備
-
-### 必要リソース
-
-* **VPSスペック(Xserver 格安プラン ):** 4コア / 4GB RAM / 150GB SSD（Ubuntu 22.04 LTS / 24.04 LTS）
-* **VPSスペック(Gemini推奨スペック):** 4コア / 8GB RAM / 100GB SSD（Ubuntu 22.04 LTS / 24.04 LTS）
-* **ドメイン設定:** 以下のサブドメインの A レコードを VPS の IP アドレスに向けておくこと
-* `gitea.j-code.org`（Gitea リポジトリ管理）
-* `drone.j-code.org`（Drone CI サーバー）
-
-* `users.j-code.org`（CIビルド成果物の配信）
-* **VPS事業者側のファイアウォール:** TCP **80 / 443 / 22**（Giteaの SSH を使う場合は 2222 も）の受信を許可しておくこと（Xserver VPS では「パケットフィルター設定」で「Web」と「SSH」を追加）。80番が塞がっていると、Caddy が Let's Encrypt の証明書を取得できません。
-
-
+* **VPS:** XServer VPS（4コア / 4GB RAM 以上、Ubuntu 24.04 LTS、「Docker」セットアップスクリプトを選択）
+* **ユーザー名:** OS の一般ユーザーは `kithub`、Gitea の管理者アカウントは `gitea-admin`
+* **ドメイン（A レコードを VPS の IP に向ける）:** `gitea.j-code.org`（Gitea）/ `drone.j-code.org`（Drone CI）/ `users.j-code.org`（CI成果物の配信）。`ide` / `flash` を使う場合はそれも。
+* **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントし、VPS の容量を使いません。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・Drone・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
 
 ---
 
-## 2. インストール手順（作業時間：約35分）
+## 2. 事前準備（人手。目安 約15分）
 
-1. **OS初期セットアップ & Dockerの導入:** 所要時間: 約5分.
-SSHでVPSにログインし、システムの更新および Docker / Docker Compose プラグインをインストールします。
+1. **R2 のバケットとトークンを作る（Cloudflare ダッシュボード）**
+   * バケットは次の 3 つを使います（すべて非公開）。
 
-```bash
-# パッケージの更新
-sudo apt update && sudo apt upgrade -y
+     | バケット | 用途 |
+     |---|---|
+     | `gitea-pages` | 公開成果物（users.j-code.org）。s3fs で `~/dev-env/pages` にマウント |
+     | `gitea-backup` | `backup.sh` の保存先 |
+     | `gitea-storage` | Gitea の添付ファイル・アバター・LFS などの保存先（Gitea の `[storage]`、MinIO 互換。リポジトリ本体と DB は VPS に置く） |
 
-# Dockerおよび必要な標準ツールのインストール
-# Xserver VPS では、管理画面で提供されている Docker 導入スクリプトで Docker を導入済みのため、以下はコメントアウトしている。
-# 手動で導入する場合は、Docker 公式リポジトリの手順に従うか、次のコマンドを使用する。
-# sudo apt install -y curl git docker.io docker-compose-v2
+   * **`gitea-pages`** 用に、そのバケットだけに限定した **Object Read & Write** トークン（既存なら不要）。
+   * **`gitea-backup`** 用に、そのバケットだけに限定した **Object Read & Write** トークン。pages 用とは別のトークンにしてください。バックアップには `.env` や `app.ini` の秘密情報が含まれます。
+   * **`gitea-storage`** 用に、そのバケットだけに限定した **Object Read & Write** トークン。**引っ越しでは、新サーバー専用に新しく発行してください**（旧サーバーのトークンは、切り替え確認後に無効化できるようにするため）。pages / backup も、引っ越しでは新サーバー用に新しいトークンを発行すると、旧サーバーと秘密情報を共有せずに済みます。
+   * アカウント ID と、上の 3 組の Access Key ID / Secret Access Key を手元に控えます。
+2. **VPS を契約し、パケットフィルターで TCP 22 / 80 / 443 / 2222 を許可する**（Xserver VPS では「パケットフィルター設定」で Web と SSH を追加し、適用する）。80 番が塞がっていると、Caddy が Let's Encrypt の証明書を取得できません。
+3. **SSH 公開鍵を VPS に登録する**（契約時の鍵設定、または root で `~/.ssh/authorized_keys`）。
+4. **（引っ越しのみ）DNS の TTL を下げる:** 切り替えるレコードの TTL を 300 秒以下にし、元の TTL が経過するまで待ちます（目安: 半日〜1日前）。
+5. **（新規構築のみ）DNS の A レコードを、新しい VPS の IP に向ける。** 引っ越しでは、この作業は 5-3 で行います。
+6. このリポジトリの変更は、先に `git push` しておいてください（スクリプトは GitHub の `main` から取得します）。
 
-# Dockerの自動起動を有効化（起動はR2マウント設定後）
-sudo systemctl enable docker
+---
 
-```
+## 3. サーバーのセットアップ（新規・引っ越し共通。新しい VPS で行う。目安 約10分）
 
-   **Docker の MTU 設定（必須）:** VPS の NIC の MTU（Xserver VPS では 1442）より Docker ブリッジの既定 MTU（1500）が大きいと、大きなダウンロードがタイムアウトや `connection reset by peer` で失敗します。`/etc/docker/daemon.json` で既定ブリッジの MTU を下げます。Drone のパイプライン用ネットワークと `dev-net` には、`docker-compose.yml` 側で別途 MTU を指定します（`daemon.json` の `mtu` は既定の `bridge` にしか効きません）。
-
-```bash
-echo '{ "mtu": 1400 }' | sudo tee /etc/docker/daemon.json
-sudo dockerd --validate --config-file=/etc/docker/daemon.json
-# Dockerの再起動はR2マウント設定後に行います
-
-```
-
-   **一般ユーザーの作成と root ログインの無効化（推奨）:** root のまま運用すると、SSH への総当たり攻撃や操作ミスの被害が大きくなります。以降の作業は一般ユーザーで行います。
+1. **root でログインし、一般ユーザー `kithub` を作る**（sudo / docker 権限と SSH 公開鍵を引き継ぎます）。
 
 ```bash
-# 一般ユーザーを作成し、sudo / docker 権限を付与（ユーザー名は任意）
-adduser kithub
-usermod -aG sudo,docker kithub
-
-# SSH公開鍵をコピー
-rsync --archive --chown=kithub:kithub ~/.ssh /home/kithub   # kithub を作成したユーザー名に置き換える
-
+curl -fsSL https://raw.githubusercontent.com/jcodeorg/kithub/main/dev-env/scripts/create-user.sh | bash
 ```
 
-   **別のターミナルから** `ssh kithub@<VPSのIP>` でログインでき、`sudo` が使えることを確認してから、`/etc/ssh/sshd_config` を次のとおり変更します。
-
-```
-PermitRootLogin no
-PasswordAuthentication no
-```
+2. **別のターミナルから `ssh kithub@<VPSのIP>` でログイン**し、`.r2.env` を作ってセットアップを実行します。`--harden-ssh` が root ログインとパスワード認証を無効にします（`kithub` で公開鍵ログインできていることが前提です）。
 
 ```bash
-sudo systemctl reload ssh
-
+sudo apt-get update && sudo apt-get install -y git
+git clone --depth 1 https://github.com/jcodeorg/kithub.git ~/kithub-repo
+mkdir -p ~/dev-env
+cat > ~/dev-env/.r2.env <<'EOF'
+R2_ACCOUNT_ID=<アカウントID>
+R2_PAGES_BUCKET=gitea-pages
+R2_PAGES_ACCESS_KEY_ID=<pages用トークンのAccess Key ID>
+R2_PAGES_SECRET_ACCESS_KEY=<pages用トークンのSecret Access Key>
+R2_BACKUP_BUCKET=gitea-backup
+R2_BACKUP_ACCESS_KEY_ID=<バックアップ用トークンのAccess Key ID>
+R2_BACKUP_SECRET_ACCESS_KEY=<バックアップ用トークンのSecret Access Key>
+R2_STORAGE_BUCKET=gitea-storage
+R2_STORAGE_ACCESS_KEY_ID=<storage用トークンのAccess Key ID>
+R2_STORAGE_SECRET_ACCESS_KEY=<storage用トークンのSecret Access Key>
+EOF
+chmod 600 ~/dev-env/.r2.env
+bash ~/kithub-repo/dev-env/scripts/bootstrap.sh --harden-ssh
 ```
 
-   ※ 公開鍵でのログイン確認前に設定すると、ログインできなくなります。以降の `~/dev-env` は、この一般ユーザーのホームディレクトリ配下に作成します。
+`bootstrap.sh` は何度実行しても安全です。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
 
+3. **次へ進む:** 新規構築なら「4」、引っ越しなら「5」へ。
 
-2. **R2を公開ファイル置き場として設定:** 所要時間: 約10分.
-`users.j-code.org` の公開ファイルは Cloudflare R2 に保存し、VPSには s3fs でマウントします。R2 がマウントされない場合に Docker 自体を起動させないことで、成果物が誤って VPS のローカルディスクへ蓄積するのを防ぎます。
+---
 
-1. Cloudflare の R2 ダッシュボードでバケットを作成し、そのバケットだけに権限を絞った **Object Read & Write** API トークンを発行します。Access Key ID、Secret Access Key、アカウント ID、バケット名を控えてください。
-2. VPS に s3fs をインストールし、資格情報ファイルを root のみ読み書きできる権限で作成します。
+## 4. 新規構築（目安 約5分）
+
+DNS が新しい VPS を向いたことを確認してから、次を実行します。
 
 ```bash
-sudo apt update
-sudo apt install -y s3fs rsync
-sudo install -m 600 /dev/null /etc/passwd-s3fs
-sudoedit /etc/passwd-s3fs
+bash ~/dev-env/scripts/init-gitea.sh
 ```
 
-`/etc/passwd-s3fs` には次の1行を記載します（値は実際のものに置き換えます）。
+Gitea を起動し、管理者 `gitea-admin` と Drone 用の OAuth アプリを作成して、全サービスを起動します。DB パスワードと Drone の RPC シークレットは、ここでランダムに生成されて `~/dev-env/.env` に保存されます（`docker-compose.yml` に直書きしません）。**最後に表示される管理者パスワードは、この画面でしか表示されません。** パスワードマネージャーに保存してください。
 
-```text
-<ACCESS_KEY_ID>:<SECRET_ACCESS_KEY>
-```
+**動作確認**
+* `https://gitea.j-code.org` に `gitea-admin` でログインできる。
+* `https://drone.j-code.org` で「Gitea でログイン」でき、リポジトリの Sync が成功する。
+* 管理者のメールアドレスを変える場合は、`GITEA_ADMIN_EMAIL=...` を付けて実行します。
 
-3. マウントポイントを作成し、`/etc/fstab` に次の1行を追加します。`<R2_BUCKET>` と `<ACCOUNT_ID>` を置き換えてください。`use_cache` は指定せず、成果物のキャッシュでVPSディスクを消費しない設定です。
+続いて「6. 運用」へ。
+
+---
+
+## 5. 引っ越し（旧 VPS → 新 VPS、R2 経由。目安 約30分）
+
+**前提**
+* 旧・新どちらも Gitea の管理者は `gitea-admin` とします。名前は DB ごと引き継がれるため、旧サーバーの管理者名が違う場合は、バックアップ前に Gitea の「サイト管理 → ユーザーアカウント」で変更しておいてください。
+* `pages`（公開成果物）と `gitea-storage`（添付・アバター・LFS など）は R2 にあるため、コピー不要です。新サーバーは同じバケットを使います。`gitea-storage` の接続情報は `app.ini` の `[storage]` に入っており、`backup.sh` / `restore.sh` で引き継がれます（旧サーバーの `.r2.env` に storage の項目は不要）。ただし旧サーバーと同じ秘密情報になるため、5-3 の `rotate-secrets.sh` で入れ替えます。
+* 引き継がれないもの: Drone のビルドキャッシュ（初回ビルドだけ遅くなります）、Docker イメージ（自動で再取得されます）。
+
+### 5-1. 旧サーバーの準備（サービスを止めずにできる）
+
+旧サーバーにも、スクリプトと `.r2.env`（バックアップ用の 3 項目だけ）を用意します。
 
 ```bash
-mkdir -p ~/dev-env/pages
-R2_BUCKET=<R2_BUCKET>
-ACCOUNT_ID=<ACCOUNT_ID>
-echo "$R2_BUCKET $HOME/dev-env/pages fuse.s3fs _netdev,allow_other,use_path_request_style,url=https://$ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0" | sudo tee -a /etc/fstab
+sudo apt-get update && sudo apt-get install -y git rclone
+git clone --depth 1 https://github.com/jcodeorg/kithub.git ~/kithub-repo
+mkdir -p ~/dev-env && cp -r ~/kithub-repo/dev-env/scripts ~/dev-env/
+cat > ~/dev-env/.r2.env <<'EOF'
+R2_ACCOUNT_ID=<アカウントID>
+R2_BACKUP_BUCKET=gitea-backup
+R2_BACKUP_ACCESS_KEY_ID=<バックアップ用トークンのAccess Key ID>
+R2_BACKUP_SECRET_ACCESS_KEY=<バックアップ用トークンのSecret Access Key>
+EOF
+chmod 600 ~/dev-env/.r2.env
 ```
 
-`$HOME` は実行したユーザーのホームに展開されるため、ユーザー名を変えても同じコマンドで済みます（fstab 自体は絶対パスが必要です）。
-
-4. Docker が公開先のマウントを必須とする設定を入れ、マウントできなければ Docker を起動しないようにします。
+### 5-2. リハーサル（任意だが推奨。旧サーバーが数分止まり、終了後に自動で再開する）
 
 ```bash
-sudo mkdir -p /etc/systemd/system/docker.service.d
-printf '[Unit]\nRequiresMountsFor=%s\n' "$HOME/dev-env/pages" | sudo tee /etc/systemd/system/docker.service.d/require-pages-mount.conf
-sudo systemctl daemon-reload
+# 旧サーバー
+bash ~/dev-env/scripts/backup.sh
+
+# 新サーバー (DNS はまだ変更しない)
+bash ~/dev-env/scripts/restore.sh
+curl -fsS --resolve gitea.j-code.org:443:<新サーバーのIP> https://gitea.j-code.org/api/healthz
 ```
 
-この drop-in は `~/dev-env/pages` のマウントを Docker の依存関係にします。`docker compose up` だけで起動順を制御するのではなく、Docker デーモン自体がマウントを待つため、再起動後も bind mount がローカルディレクトリを誤って参照しません。既存の `pages` に公開済みファイルがある場合は、下の移行手順を通常のマウントより先に行ってください。マウントすると、下にあるローカルファイルは見えなくなります。
+確認できたら、本番で `restore.sh --force` を使い、新サーバーのデータを消してやり直します。リハーサルを省略する場合は、`--force` なしで 5-3 へ進みます。
 
-5. 既存の `pages` データがある場合だけ、通常のマウントを有効にする前に一時マウント経由で R2 へコピーします。コピー元は、マウントで隠れるローカルデータの退避先です。
+### 5-3. 本番の切り替え（ここから旧サーバーが止まる）
+
+1. **旧サーバー**: 最終バックアップを取ります。完了後も旧サーバーのサービスは停止したままになります（再開しないでください）。
 
 ```bash
-sudo systemctl stop docker
-mv ~/dev-env/pages ~/dev-env/pages-local-backup
-mkdir -p ~/dev-env/pages /mnt/r2-pages
-sudo s3fs <R2_BUCKET> /mnt/r2-pages -o passwd_file=/etc/passwd-s3fs -o url=https://<ACCOUNT_ID>.r2.cloudflarestorage.com -o endpoint=auto -o use_path_request_style -o allow_other
-sudo rsync -rt --no-perms --no-owner --no-group ~/dev-env/pages-local-backup/ /mnt/r2-pages/
-sudo umount /mnt/r2-pages
+bash ~/dev-env/scripts/backup.sh --final
 ```
 
-R2 バケットが空であることを事前に確認し、コピー完了後も VPS 上の `pages-local-backup` は内容確認が済むまで残してください。新規構築で移行データがない場合、この手順は飛ばします。
-
-6. fstab の設定でマウントしてから Docker を再起動します。
+2. **新サーバー**: 復元します。最後に管理者の一覧が表示されるので、`gitea-admin` があることを確認します（リハーサル済みなら `--force` を付けます）。
 
 ```bash
-sudo mount ~/dev-env/pages
-findmnt -T ~/dev-env/pages -o SOURCE,FSTYPE,TARGET
-sudo systemctl restart docker
+bash ~/dev-env/scripts/restore.sh
 ```
 
-`FSTYPE` が `fuse.s3fs` であることを確認してから Docker を再起動してください。再起動で実行中のコンテナは一時停止します。マウントに失敗した場合は Docker を起動せず、`sudo journalctl -b -u 'home-kithub-dev\x2denv-pages.mount'` と `sudo journalctl -u docker` で原因を確認してください。R2 が利用できない状態で Docker を手動起動する運用は避けてください。Docker 起動に失敗した場合は、R2 接続を復旧してから再起動します。
-
-3. **ディレクトリ構造作成と SSL (Caddy) の設定:** 所要時間: 約5分.
-全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
+3. **新サーバー**: パスワード・トークンを新しいものに入れ替えます。DNS 変更の前に行うため、旧サーバーにも利用者にも影響しません。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/cache
-cd ~/dev-env
-
+bash ~/dev-env/scripts/rotate-secrets.sh
 ```
 
-`caddy/Caddyfile` を作成します（`j-code.org` はお使いのドメインに書き換えてください）。`ide`、`flash`、CI成果物の静的ファイルは、それぞれ Caddy が `/srv/ide`、`/srv/flash`、`/srv/pages`（`./ide`、`./flash`、R2 をマウントした `./pages`）から直接配信します。
+   入れ替わるもの: DB パスワード / Drone の RPC シークレットと OAuth シークレット / `gitea-admin` のパスワード / `gitea-storage` の R2 トークン（`~/dev-env/.r2.env` の `R2_STORAGE_*` の値を `app.ini` に反映）/ Gitea の `INTERNAL_TOKEN`・`JWT_SECRET`・`LFS_JWT_SECRET`。
+   * **新しい `gitea-storage` のトークンを、先に `.r2.env` に書いておいてください**（3 章で記入済みなら不要）。
+   * **最後に表示される新しい管理者パスワードは、この画面でしか表示されません。** パスワードマネージャーに保存してください。
+   * `SECRET_KEY` は、暗号化済みのデータが読めなくなるため入れ替えません。
+   * Drone は OAuth が作り直されるため、全員が一度ログインし直します。
 
-```caddy
-# Gitea (リポジトリ管理)
-gitea.j-code.org {
-    reverse_proxy gitea:3000
-}
-
-# Web IDE (クライアント型IDEの静的アセット配信)
-ide.j-code.org {
-    root * /srv/ide
-    file_server
-}
-
-# Drone CI (自動ビルド)
-drone.j-code.org {
-    reverse_proxy drone:80
-}
-
-# ESP Web Tools (Web Serial 書き込みUI)
-flash.j-code.org {
-    root * /srv/flash
-    file_server
-}
-
-# CI成果物の静的配信
-users.j-code.org {
-    root * /srv/pages
-    file_server
-}
-
-```
-
-
-3. **Docker Compose 設定ファイルの作成:** 所要時間: 約10分.
-`~/dev-env/docker-compose.yml` を作成し、サーバーのリソース（メモリ）を消費しない構成を定義します。
-
-```yaml
-networks:
-  dev-net:
-    driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: "1400"
-
-services:
-  # --- リバースプロキシ (HTTPS自動化) ---
-  caddy:
-    image: caddy:2-alpine
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
-      - ./ide:/srv/ide:ro
-      - ./flash:/srv/flash:ro
-      - type: bind
-        source: ./pages
-        target: /srv/pages
-        read_only: true
-        bind:
-          create_host_path: false
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - dev-net
-
-  # --- Gitリポジトリ管理 (Gitea) ---
-  gitea:
-    image: gitea/gitea:1.21-rootless
-    restart: always
-    environment:
-      - USER_UID=1000
-      - USER_GID=1000
-      - GITEA__server__ROOT_URL=https://gitea.j-code.org/
-      - GITEA__server__SSH_PORT=2222
-    volumes:
-      - ./gitea:/var/lib/gitea
-      - ./gitea-config:/etc/gitea
-    ports:
-      - "2222:2222"
-    networks:
-      - dev-net
-
-  # --- 自動ビルド (Drone CI) ---
-  drone:
-    image: drone/drone:2
-    restart: always
-    environment:
-      - DRONE_GITEA_SERVER=https://gitea.j-code.org
-      - DRONE_GITEA_CLIENT_ID=${GITEA_CLIENT_ID}
-      - DRONE_GITEA_CLIENT_SECRET=${GITEA_CLIENT_SECRET}
-      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
-      - DRONE_SERVER_HOST=drone.j-code.org
-      - DRONE_SERVER_PROTO=https
-    volumes:
-      - ./drone:/data
-    networks:
-      - dev-net
-
-  # --- Drone CI Runner (一斉ビルド負荷制御) ---
-  drone-runner:
-    image: drone/drone-runner-docker:1
-    restart: always
-    environment:
-      - DRONE_RPC_PROTO=https
-      - DRONE_RPC_HOST=drone.j-code.org
-      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET}
-      - DRONE_RUNNER_CAPACITY=2  # 同時ビルド並列数を2件に絞りハングアップを防止
-      - DRONE_RUNNER_NAME=vps-runner
-      # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
-      - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      # 全パイプラインのステップに、成果物の公開先(users.j-code.org)を /publish、ビルドキャッシュを /ci-cache としてマウントする
-      # DEV_ENV_DIR は .env で指定する dev-env の絶対パス (例: /home/<ユーザー名>/dev-env)
-      - DRONE_RUNNER_VOLUMES=${DEV_ENV_DIR:?.env に DEV_ENV_DIR を設定してください}/pages:/publish,${DEV_ENV_DIR}/cache:/ci-cache
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - dev-net
-
-volumes:
-  caddy_data:
-  caddy_config:
-
-```
-
-
-5. **Gitea連携 & Drone OAuth設定:** 所要時間: 約10分.
-1. 最初に Gitea と リバースプロキシを起動します。
-Gitea (rootless イメージ) はUID 1000で動作するため、事前にデータディレクトリの所有者を変更しておかないと `/var/lib/gitea/git is not writable` で起動に失敗します。
-Gitea の設定ファイルは `/etc/gitea/app.ini` に保存されるため、データとは別に `./gitea-config` へ永続化します。既存環境でこの設定を追加する場合は、Compose ファイルを更新してコンテナを再作成する前に、現在のコンテナから設定ファイルをコピーしてください。
+4. **DNS を変更（人手）:** `gitea` / `drone` / `users` と、使っていれば `ide` / `flash` の A レコードを新サーバーの IP に変更します。
+5. **新サーバー:** DNS の反映を待って、drone-runner の起動と疎通確認までを行います（旧 IP のまま起動すると、旧サーバーの Drone に接続してしまうため、スクリプトが反映を確認してから起動します）。
 
 ```bash
-cd ~/dev-env
-sudo chown -R 1000:1000 ./gitea ./gitea-config
-docker compose up -d gitea caddy
-
+bash ~/dev-env/scripts/go-live.sh
 ```
 
-既存環境で `./gitea-config:/etc/gitea` のマウントを追加する場合は、上記の起動前に次を実行して、現在使われている設定をホストへ退避します（初回構築では不要です）。
+6. **確認:** `https://drone.j-code.org` で Sync が成功し、テスト用リポジトリの push でビルドが通り、`https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/` が更新されること。
+7. **後片付け:** DNS の TTL を元に戻します。旧サーバーは、問題がないと確認できてから 1 週間ほど停止したまま残し、その後に解約します。**Cloudflare で、旧サーバーが使っていた R2 のトークン（pages / backup / storage）を無効化します。** 旧サーバーを解約する前に、旧サーバーのディスクや `~/dev-env/.env`・`app.ini` に残る古い秘密情報も消去されることを確認してください（解約時にディスクは破棄されます）。
+8. 続いて「6. 運用」の定時バックアップを、新サーバーで設定します。
 
-```bash
-docker cp "$(docker compose ps -q gitea)":/etc/gitea/app.ini ./gitea-config/app.ini
-sudo chown 1000:1000 ./gitea-config/app.ini
+### 5-4. 戻す場合
+
+DNS を旧サーバーの IP に戻し、旧サーバーで `cd ~/dev-env && docker compose start gitea drone drone-runner` を実行します。新サーバーで書き込まれたデータは、旧サーバーには反映されません。
+
+---
+
+## 6. 運用
+
+### 6-1. 定時バックアップ（推奨）
+
+毎日 4:00 に R2 へバックアップします（新しい 7 世代を保持）。実行中は Gitea と Drone が数分止まります。`crontab -e` に次を追加します。
+
+```cron
+0 4 * * * $HOME/dev-env/scripts/backup.sh >> $HOME/backup.log 2>&1
 ```
 
-2. ブラウザで `https://gitea.j-code.org` にアクセスし、初期管理者を作成します。
-3. Gitea画面の右上アイコン > **[設定]** > **[アプリケーション]** > **[OAuth2アプリケーションの作成]** から以下を入力します。
-* **アプリケーション名:** `Drone CI`
-* **リダイレクトURI:** `https://drone.j-code.org/login`
+### 6-2. 生徒向けの設定
 
+* 生徒が使う `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーします（変更不要）。`/publish` は R2 をマウントした `~/dev-env/pages`、`/ci-cache` は VPS の `~/dev-env/cache` に保存されます。
+* CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチ push 時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信されます。
+* R2 はオブジェクトストレージで、ローカルファイルシステムと同じ原子性・遅延特性ではありません。s3fs のアップロード中の一時ファイル、ビルドキャッシュ、Docker イメージやログは VPS の容量を使います。定期的に VPS の空き容量と R2 の利用状況を確認してください。
 
-4. 発行された **Client ID** と **Client Secret** を確認します。
-5. `~/dev-env/.env` ファイルを作成して記載します。
+### 6-3. Gitea の一般ユーザー登録
 
-```env
-GITEA_CLIENT_ID=発行されたClient_ID
-GITEA_CLIENT_SECRET=発行されたClient_Secret
-DRONE_RPC_SECRET=任意で生成した文字列(openssl rand -hex 16 等)
-DEV_ENV_DIR=/home/<ユーザー名>/dev-env   # `echo ~/dev-env` の出力 (docker-compose.yml の DRONE_RUNNER_VOLUMES が使用)
+`docker-compose.yml` の `gitea` の `environment` に `GITEA__service__DISABLE_REGISTRATION=true` を追加し、`docker compose up -d gitea` で無効化できます。Google SSO を使う場合は、下の「6-4」の設定を使い、この環境変数は設定しないでください（環境変数が `app.ini` より優先され、Google 経由の登録も止まります）。
 
+### 6-4. Google SSO 連携（オプション）
+
+Gitea のログイン／アカウント作成に Google アカウントを使えるようにします。コンテナの変更は不要です。
+
+* **(1) Google Cloud Console**
+  1. 「APIとサービス → OAuth 同意画面」を設定します。学校の Google Workspace に限定する場合はユーザーの種類を「内部」、一般の Gmail も許可する場合は「外部」にします。
+  2. 「認証情報 → 認証情報を作成 → OAuth クライアント ID」で、種類を「ウェブ アプリケーション」にします。
+  3. 「承認済みのリダイレクト URI」に `https://gitea.j-code.org/user/oauth2/google/callback` を登録します（`google` は (2) の認証名と一致させる）。
+  4. 表示されたクライアント ID とクライアント シークレットを控えます。
+* **(2) Gitea 管理画面**
+  1. 管理者で「サイト管理 → 認証ソース → 認証ソースを追加」を開きます。
+  2. 認証タイプ `OAuth2`、認証名 `google`、OAuth2 プロバイダー `Google` を選び、クライアント ID とシークレットを入力して保存します。
+  3. ログイン画面に「Google でサインイン」が表示されることを確認します。
+* **(3) `app.ini` の調整**
+  `~/dev-env/gitea-config/app.ini` に追記し、`docker compose restart gitea` で反映します。初回ログイン時に、生徒が自分でユーザー名を入力する構成です（Gitea 1.21 では、Google 登録後のユーザー名は変更できないため）。
+
+```ini
+[oauth2_client]
+; 自動登録を行わず、初回ログイン時に登録画面でユーザー名を入力させる
+ENABLE_AUTO_REGISTRATION = false
+; 既存アカウントにひも付ける場合はログインを要求する
+ACCOUNT_LINKING = login
+; Google のプロフィール画像を同期する（不要なら false）
+UPDATE_AVATAR = true
+
+[service]
+; Google 経由の登録だけ許可する（DISABLE_REGISTRATION は true にしない）
+DISABLE_REGISTRATION = false
+ALLOW_ONLY_EXTERNAL_REGISTRATION = true
 ```
 
-6. 全サービスを一括起動します。`.env` が未作成のまま起動すると `drone` が起動せず、Caddy に `lookup drone ... server misbehaving`（502）のエラーが出ます。`.env` は Git にコミットしないでください。
+* **(4) ユーザー名を間違えた場合（生徒自身でやり直し）**
+  Gitea 1.21 では、Google 登録（外部）ユーザーのユーザー名は、本人も管理者も変更できません。次の手順でアカウントを削除し、作り直します。
+  1. 間違えたアカウントでログインし、「設定 → アカウント」でパスワードを設定します（Google 登録のアカウントはパスワードが未設定のため、設定しないと削除できません）。
+  2. 同じ画面の「アカウントを削除」で、設定したパスワードを入力して削除します。
+  3. もう一度「Google でサインイン」を押し、正しいユーザー名で登録します。
+  * 削除できるのは、リポジトリ・組織・パッケージを持たない場合のみです。リポジトリがある場合は、先に削除または移管してください。管理者アカウントは自分では削除できません。
+  * 授業の最初に、ログインとユーザー名の登録だけを済ませる時間を取り、命名規則（学籍番号など）を事前に周知すると、やり直しを減らせます。
+* **注意:** 「外部」で公開すると、誰でもアカウントを作成できます。利用者を限定する場合は、Workspace の「内部」を使ってください。Drone は Gitea の OAuth2 でログインするため、この設定の影響を受けません。
 
-```bash
-docker compose up -d
+### 6-5. ESP32 書き込みツール（ESP Web Tools。オプション）
 
-```
+Web Serial API で、Chromebook から USB 経由で ESP32 にワンクリック書き込みするための静的ページです。使う場合は、次を行います。
 
-
-6. **ESP32書き込みツール (ESP Web Tools) の配置:** 所要時間: 約5分.
-Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリック書き込みを行うための静的ファイルを `~/dev-env/flash/index.html` として設置します。
+1. `~/dev-env/caddy/Caddyfile` に `flash.j-code.org { root * /srv/flash; file_server }`（`flash.j-code.org` の A レコードも追加）を追記し、`docker-compose.yml` の caddy の `volumes` に `./flash:/srv/flash:ro` を追加して、`docker compose up -d caddy` を実行します。
+2. 次の内容を `~/dev-env/flash/index.html` として保存します。
 
 ```html
 <!DOCTYPE html>
@@ -347,74 +270,29 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
   </div>
 </body>
 </html>
-
 ```
 
-* **検証:** Chromebookから `https://flash.j-code.org` にアクセスし、「Connect」ボタンからUSBシリアルポートが検出されることを確認します。
+3. **検証:** Chromebook から `https://flash.j-code.org` にアクセスし、「Connect」ボタンから USB シリアルポートが検出されることを確認します。`flash` は `backup.sh` の対象に含まれます。
 
+### 6-6. トラブルシューティング: Drone のビルドが外部（GitHub など）に接続できない
 
----
+コンテナから外へ通信できない場合の確認手順です（`bootstrap.sh` で設定済みのため、通常は不要です）。
 
-## 3. 本手順書に含まれない補足作業（簡易チェックリスト）
+1. **疎通テスト:** 成功すれば `connected` と `200 OK` / `301` が返ります。成功したら、Drone の画面から Re-run します。
 
-本インストールガイドの範囲外となる、事前・事後で必要となる周辺作業です。
-
-* **1. ドメイン・DNSの設定**
-* 外部DNS管理画面でサブドメイン5種（`gitea`, `ide`, `drone`, `flash`, `pages`）の A レコードをVPSのパブリックIPへ紐付ける作業。
-
-
-* **2. サーバー基本セキュリティ設定**
-* ファイアウォール（`ufw`）による不要ポートの閉鎖（80, 443, 22番のみ許可）。
-* Giteaの一般ユーザー自由登録（Sign-up）の無効化設定。初期構築中は許可したままでも構いませんが、管理者アカウントには強いパスワードを設定し、ユーザー登録が済んだら無効化してください。`docker-compose.yml` の `gitea` の `environment` に `GITEA__service__DISABLE_REGISTRATION=true` を追加し、`docker compose up -d gitea` を実行します。
-
-
-* **3. リポジトリ用ビルド定義とマニフェスト作成**
-* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`.drone.yml` は変更不要。`/publish` は R2 をマウントした `~/dev-env/pages`、`/ci-cache` は VPS の `~/dev-env/cache` に保存）。
-* CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチPush時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信する。
-* R2 はオブジェクトストレージであり、ローカルファイルシステムと同じ原子性・遅延特性はありません。s3fs のアップロード中の一時ファイルとビルドキャッシュ、Docker イメージやログは VPS の容量を使います。大きなファイルや大量の一覧取得を避け、定期的に VPS の空き容量と R2 の利用状況を確認してください。
-* ESP Web Tools書き込み用の `manifest.json`（バイナリ配置URL等の定義）の用意。
-
-
-* **4. Google SSO連携設定（オプション）**
-* Gitea のログイン／アカウント作成に Google アカウントを使えるようにする手順です。コンテナの変更は不要です。
-* **(1) Google Cloud Console**
-  1. 「APIとサービス → OAuth 同意画面」を設定します。学校の Google Workspace に限定する場合はユーザーの種類を「内部」、一般の Gmail も許可する場合は「外部」にします。
-  2. 「認証情報 → 認証情報を作成 → OAuth クライアント ID」で、種類を「ウェブ アプリケーション」にします。
-  3. 「承認済みのリダイレクト URI」に `https://gitea.j-code.org/user/oauth2/google/callback` を登録します（`google` は (2) の認証名と一致させる）。
-  4. 表示されたクライアント ID とクライアント シークレットを控えます。
-* **(2) Gitea 管理画面**
-  1. 管理者で「サイト管理 → 認証ソース → 認証ソースを追加」を開きます。
-  2. 認証タイプ `OAuth2`、認証名 `google`、OAuth2 プロバイダー `Google` を選び、クライアント ID とシークレットを入力して保存します。
-  3. ログイン画面に「Google でサインイン」が表示されることを確認します。
-* **(3) `app.ini` の調整**
-  `~/dev-env/gitea-config/app.ini` に追記し、`docker compose restart gitea` で反映します。初回ログイン時に、生徒が自分でユーザー名を入力する構成です（Gitea 1.21 では、Google 登録後のユーザー名は変更できないため）。
-```ini
-[oauth2_client]
-; 自動登録を行わず、初回ログイン時に登録画面でユーザー名を入力させる
-ENABLE_AUTO_REGISTRATION = false
-; 既存アカウントにひも付ける場合はログインを要求する
-ACCOUNT_LINKING = login
-; Google のプロフィール画像を同期する（不要なら false）
-UPDATE_AVATAR = true
-
-[service]
-; Google 経由の登録だけ許可する（DISABLE_REGISTRATION は true にしない）
-DISABLE_REGISTRATION = false
-ALLOW_ONLY_EXTERNAL_REGISTRATION = true
+```bash
+docker exec -it dev-env-drone-runner-1 wget --spider --timeout=5 https://github.com
 ```
-* **(4) ユーザー名を間違えた場合（生徒自身でやり直し）**
-  Gitea 1.21 では、Google 登録（外部）ユーザーのユーザー名は、本人も管理者も変更できません。次の手順でアカウントを削除し、作り直します。
-  1. 間違えたアカウントでログインし、「設定 → アカウント」でパスワードを設定します（Google 登録のアカウントはパスワードが未設定のため、設定しないと削除できません）。
-  2. 同じ画面の「アカウントを削除」で、設定したパスワードを入力して削除します。
-  3. もう一度「Google でサインイン」を押し、正しいユーザー名で登録します。
-  * 削除できるのは、リポジトリ・組織・パッケージを持たない場合のみです。リポジトリがある場合は、先に削除または移管してください。管理者アカウントは自分では削除できません。
-  * 授業の最初に、ログインとユーザー名の登録だけを済ませる時間を取り、命名規則（学籍番号など）を事前に周知すると、やり直しを減らせます。
-* **注意:** 「外部」で公開すると、誰でもアカウントを作成できます。利用者を限定する場合は、Workspace の「内部」を使ってください。`DISABLE_REGISTRATION` は項目 2 の環境変数と二重に設定しないでください（環境変数が `app.ini` より優先され、Google 経由の登録も止まります）。Drone は Gitea の OAuth2 でログインするため、この設定の影響を受けません。
 
+2. **IP フォワーディング:** `cat /proc/sys/net/ipv4/ip_forward` が `1` でなければ、次を実行します。
 
-* **5. バックアップ・保守管理**
-* Giteaデータディレクトリ（`~/dev-env/gitea`）の定時バックアップCron作成。
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/99-kithub.conf
+sudo sysctl --system
+```
 
-
-
----
+3. **UFW:** `sudo ufw status verbose` が「非アクティブ」なら問題ありません。有効な場合は、Docker からの外向き通信を破棄していないか確認します。
+4. **Docker の再起動:** 転送ルールを再適用させるため、`sudo systemctl restart docker` を実行します。その後、`cd ~/dev-env && docker compose up -d` で、コンテナを起動し直します。
+5. 手動の `iptables -t nat ... MASQUERADE` 追加は、通常は不要です。Docker が自動で設定します。
+6. それでも通信が不安定（大きなデータだけ失敗する）な場合は、MTU が原因の可能性があります。`daemon.json`、`dev-env` の `dev-net`、`DRONE_RUNNER_NETWORK_OPTS` の 3 か所を、同じ値（1400）にそろえてください。
