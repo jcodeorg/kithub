@@ -1,14 +1,15 @@
 # ESP32 (arduino-cli) ビルド → users.j-code.org へ公開 → タグ時に Gitea リリース
 #
 # 前提 (dev-env/docker-compose.yml の drone-runner に設定済み):
-#   DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
+#   DRONE_RUNNER_VOLUMES=${DEV_ENV_DIR}/pages:/publish,${DEV_ENV_DIR}/cache:/ci-cache
+#   (DEV_ENV_DIR は dev-env/.env に設定するホスト上の ~/dev-env の絶対パス)
 #   - /publish  : users.j-code.org のドキュメントルート
 #   - /ci-cache : ビルドキャッシュ (arduino-cli のコア/ライブラリ/ビルド成果)
 #                 同時に複数ビルドが走っても壊れないよう、flock で直列化しています。
 #
 # 注意: 次の更新はキャッシュ側にあるため、手動で行います。
-#   - arduino-cli を更新するには、ホストの /home/kithub/dev-env/cache/bin を削除します。
-#   - ESP32コアのバージョンを変えるには、ホストの /home/kithub/dev-env/cache/data を削除します。
+#   - arduino-cli を更新するには、ホストの ~/dev-env/cache/bin を削除します。
+#   - ESP32コアのバージョンを変えるには、ホストの ~/dev-env/cache/data を削除します。
 #
 # ランナー側でマウントするため、リポジトリの Trusted 設定や `volumes: host:` は不要。
 kind: pipeline

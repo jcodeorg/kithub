@@ -91,7 +91,8 @@ services:
       - DRONE_RUNNER_CAPACITY=2
       - DRONE_RUNNER_NAME=vps-runner
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
+      # DEV_ENV_DIR は .env で指定する dev-env の絶対パス (例: /home/<ユーザー名>/dev-env)
+      - DRONE_RUNNER_VOLUMES=${DEV_ENV_DIR:?.env に DEV_ENV_DIR を設定してください}/pages:/publish,${DEV_ENV_DIR}/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

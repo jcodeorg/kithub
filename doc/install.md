@@ -62,7 +62,7 @@ adduser kithub
 usermod -aG sudo,docker kithub
 
 # SSH公開鍵をコピー
-rsync --archive --chown=kithub:kithub ~/.ssh /home/kithub
+rsync --archive --chown=kithub:kithub ~/.ssh /home/kithub   # kithub を作成したユーザー名に置き換える
 
 ```
 
@@ -104,22 +104,22 @@ sudoedit /etc/passwd-s3fs
 
 ```bash
 mkdir -p ~/dev-env/pages
-sudoedit /etc/fstab
+R2_BUCKET=<R2_BUCKET>
+ACCOUNT_ID=<ACCOUNT_ID>
+echo "$R2_BUCKET $HOME/dev-env/pages fuse.s3fs _netdev,allow_other,use_path_request_style,url=https://$ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0" | sudo tee -a /etc/fstab
 ```
 
-```fstab
-<R2_BUCKET> /home/kithub/dev-env/pages fuse.s3fs _netdev,allow_other,use_path_request_style,url=https://<ACCOUNT_ID>.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0
-```
+`$HOME` は実行したユーザーのホームに展開されるため、ユーザー名を変えても同じコマンドで済みます（fstab 自体は絶対パスが必要です）。
 
 4. Docker が公開先のマウントを必須とする設定を入れ、マウントできなければ Docker を起動しないようにします。
 
 ```bash
 sudo mkdir -p /etc/systemd/system/docker.service.d
-sudo cp ~/dev-env/docker/docker.service.d/override.conf /etc/systemd/system/docker.service.d/override.conf
+printf '[Unit]\nRequiresMountsFor=%s\n' "$HOME/dev-env/pages" | sudo tee /etc/systemd/system/docker.service.d/require-pages-mount.conf
 sudo systemctl daemon-reload
 ```
 
-`/path/to/kithub` は、このリポジトリをチェックアウトした場所に置き換えてください。この drop-in は `/home/kithub/dev-env/pages` のマウントを Docker の依存関係にします。`docker compose up` だけで起動順を制御するのではなく、Docker デーモン自体がマウントを待つため、再起動後も bind mount がローカルディレクトリを誤って参照しません。既存の `pages` に公開済みファイルがある場合は、下の移行手順を通常のマウントより先に行ってください。マウントすると、下にあるローカルファイルは見えなくなります。
+この drop-in は `~/dev-env/pages` のマウントを Docker の依存関係にします。`docker compose up` だけで起動順を制御するのではなく、Docker デーモン自体がマウントを待つため、再起動後も bind mount がローカルディレクトリを誤って参照しません。既存の `pages` に公開済みファイルがある場合は、下の移行手順を通常のマウントより先に行ってください。マウントすると、下にあるローカルファイルは見えなくなります。
 
 5. 既存の `pages` データがある場合だけ、通常のマウントを有効にする前に一時マウント経由で R2 へコピーします。コピー元は、マウントで隠れるローカルデータの退避先です。
 
@@ -137,8 +137,8 @@ R2 バケットが空であることを事前に確認し、コピー完了後�
 6. fstab の設定でマウントしてから Docker を再起動します。
 
 ```bash
-sudo mount /home/kithub/dev-env/pages
-findmnt -T /home/kithub/dev-env/pages -o SOURCE,FSTYPE,TARGET
+sudo mount ~/dev-env/pages
+findmnt -T ~/dev-env/pages -o SOURCE,FSTYPE,TARGET
 sudo systemctl restart docker
 ```
 
@@ -266,7 +266,8 @@ services:
       # パイプラインごとに作られるネットワークのMTUをホストNIC(1442)より小さくする
       - DRONE_RUNNER_NETWORK_OPTS=com.docker.network.driver.mtu:1400
       # 全パイプラインのステップに、成果物の公開先(users.j-code.org)を /publish、ビルドキャッシュを /ci-cache としてマウントする
-      - DRONE_RUNNER_VOLUMES=/home/kithub/dev-env/pages:/publish,/home/kithub/dev-env/cache:/ci-cache
+      # DEV_ENV_DIR は .env で指定する dev-env の絶対パス (例: /home/<ユーザー名>/dev-env)
+      - DRONE_RUNNER_VOLUMES=${DEV_ENV_DIR:?.env に DEV_ENV_DIR を設定してください}/pages:/publish,${DEV_ENV_DIR}/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -311,6 +312,7 @@ sudo chown 1000:1000 ./gitea-config/app.ini
 GITEA_CLIENT_ID=発行されたClient_ID
 GITEA_CLIENT_SECRET=発行されたClient_Secret
 DRONE_RPC_SECRET=任意で生成した文字列(openssl rand -hex 16 等)
+DEV_ENV_DIR=/home/<ユーザー名>/dev-env   # `echo ~/dev-env` の出力 (docker-compose.yml の DRONE_RUNNER_VOLUMES が使用)
 
 ```
 
