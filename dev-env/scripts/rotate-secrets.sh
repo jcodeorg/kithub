@@ -66,7 +66,7 @@ docker compose exec -T gitea wget -qO- http://localhost:3000/api/healthz >/dev/n
 
 # 6) 管理者のパスワード
 docker compose exec -T gitea gitea admin user change-password \
-  --username "$ADMIN_USER" --password "$ADMIN_PASS" --must-change-password=false
+  --username "$ADMIN_USER" --password "$ADMIN_PASS"
 
 # 7) Drone の OAuth アプリを作り直し、新しい ID / シークレットを .env に書く
 NET="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(docker compose ps -q gitea)")"
