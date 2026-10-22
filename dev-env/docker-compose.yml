@@ -15,7 +15,12 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile
       - ./ide:/srv/ide:ro
-      - ./pages:/srv/pages:ro
+      - type: bind
+        source: ./pages
+        target: /srv/pages
+        read_only: true
+        bind:
+          create_host_path: false
       - caddy_data:/data
       - caddy_config:/config
     networks:

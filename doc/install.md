@@ -40,8 +40,8 @@ sudo apt update && sudo apt upgrade -y
 # 手動で導入する場合は、Docker 公式リポジトリの手順に従うか、次のコマンドを使用する。
 # sudo apt install -y curl git docker.io docker-compose-v2
 
-# Dockerサービスの起動と自動起動有効化
-sudo systemctl enable --now docker
+# Dockerの自動起動を有効化（起動はR2マウント設定後）
+sudo systemctl enable docker
 
 ```
 
@@ -50,7 +50,7 @@ sudo systemctl enable --now docker
 ```bash
 echo '{ "mtu": 1400 }' | sudo tee /etc/docker/daemon.json
 sudo dockerd --validate --config-file=/etc/docker/daemon.json
-sudo systemctl restart docker   # 実行中のコンテナとDroneのビルドは止まります
+# Dockerの再起動はR2マウント設定後に行います
 
 ```
 
@@ -81,16 +81,79 @@ sudo systemctl reload ssh
    ※ 公開鍵でのログイン確認前に設定すると、ログインできなくなります。以降の `~/dev-env` は、この一般ユーザーのホームディレクトリ配下に作成します。
 
 
-2. **ディレクトリ構造作成と SSL (Caddy) の設定:** 所要時間: 約5分.
+2. **R2を公開ファイル置き場として設定:** 所要時間: 約10分.
+`users.j-code.org` の公開ファイルは Cloudflare R2 に保存し、VPSには s3fs でマウントします。R2 がマウントされない場合に Docker 自体を起動させないことで、成果物が誤って VPS のローカルディスクへ蓄積するのを防ぎます。
+
+1. Cloudflare の R2 ダッシュボードでバケットを作成し、そのバケットだけに権限を絞った **Object Read & Write** API トークンを発行します。Access Key ID、Secret Access Key、アカウント ID、バケット名を控えてください。
+2. VPS に s3fs をインストールし、資格情報ファイルを root のみ読み書きできる権限で作成します。
+
+```bash
+sudo apt update
+sudo apt install -y s3fs rsync
+sudo install -m 600 /dev/null /etc/passwd-s3fs
+sudoedit /etc/passwd-s3fs
+```
+
+`/etc/passwd-s3fs` には次の1行を記載します（値は実際のものに置き換えます）。
+
+```text
+<ACCESS_KEY_ID>:<SECRET_ACCESS_KEY>
+```
+
+3. マウントポイントを作成し、`/etc/fstab` に次の1行を追加します。`<R2_BUCKET>` と `<ACCOUNT_ID>` を置き換えてください。`use_cache` は指定せず、成果物のキャッシュでVPSディスクを消費しない設定です。
+
+```bash
+mkdir -p ~/dev-env/pages
+sudoedit /etc/fstab
+```
+
+```fstab
+<R2_BUCKET> /home/kithub/dev-env/pages fuse.s3fs _netdev,allow_other,use_path_request_style,url=https://<ACCOUNT_ID>.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0
+```
+
+4. Docker が公開先のマウントを必須とする設定を入れ、マウントできなければ Docker を起動しないようにします。
+
+```bash
+sudo mkdir -p /etc/systemd/system/docker.service.d
+sudo cp ~/dev-env/docker/docker.service.d/override.conf /etc/systemd/system/docker.service.d/override.conf
+sudo systemctl daemon-reload
+```
+
+`/path/to/kithub` は、このリポジトリをチェックアウトした場所に置き換えてください。この drop-in は `/home/kithub/dev-env/pages` のマウントを Docker の依存関係にします。`docker compose up` だけで起動順を制御するのではなく、Docker デーモン自体がマウントを待つため、再起動後も bind mount がローカルディレクトリを誤って参照しません。既存の `pages` に公開済みファイルがある場合は、下の移行手順を通常のマウントより先に行ってください。マウントすると、下にあるローカルファイルは見えなくなります。
+
+5. 既存の `pages` データがある場合だけ、通常のマウントを有効にする前に一時マウント経由で R2 へコピーします。コピー元は、マウントで隠れるローカルデータの退避先です。
+
+```bash
+sudo systemctl stop docker
+mv ~/dev-env/pages ~/dev-env/pages-local-backup
+mkdir -p ~/dev-env/pages /mnt/r2-pages
+sudo s3fs <R2_BUCKET> /mnt/r2-pages -o passwd_file=/etc/passwd-s3fs -o url=https://<ACCOUNT_ID>.r2.cloudflarestorage.com -o endpoint=auto -o use_path_request_style -o allow_other
+sudo rsync -rt --no-perms --no-owner --no-group ~/dev-env/pages-local-backup/ /mnt/r2-pages/
+sudo umount /mnt/r2-pages
+```
+
+R2 バケットが空であることを事前に確認し、コピー完了後も VPS 上の `pages-local-backup` は内容確認が済むまで残してください。新規構築で移行データがない場合、この手順は飛ばします。
+
+6. fstab の設定でマウントしてから Docker を再起動します。
+
+```bash
+sudo mount /home/kithub/dev-env/pages
+findmnt -T /home/kithub/dev-env/pages -o SOURCE,FSTYPE,TARGET
+sudo systemctl restart docker
+```
+
+`FSTYPE` が `fuse.s3fs` であることを確認してから Docker を再起動してください。再起動で実行中のコンテナは一時停止します。マウントに失敗した場合は Docker を起動せず、`sudo journalctl -b -u 'home-kithub-dev\x2denv-pages.mount'` と `sudo journalctl -u docker` で原因を確認してください。R2 が利用できない状態で Docker を手動起動する運用は避けてください。Docker 起動に失敗した場合は、R2 接続を復旧してから再起動します。
+
+3. **ディレクトリ構造作成と SSL (Caddy) の設定:** 所要時間: 約5分.
 全サービスをまとめて管理するためのディレクトリを作成し、 Let's Encrypt 自動SSLに対応した **Caddy** の設定ファイルを用意します。
 
 ```bash
-mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/pages ~/dev-env/cache
+mkdir -p ~/dev-env/caddy ~/dev-env/gitea ~/dev-env/gitea-config ~/dev-env/drone ~/dev-env/ide ~/dev-env/flash/download ~/dev-env/cache
 cd ~/dev-env
 
 ```
 
-`caddy/Caddyfile` を作成します（`j-code.org` はお使いのドメインに書き換えてください）。`ide`、`flash`、CI成果物の静的ファイルは、それぞれ Caddy が `/srv/ide`、`/srv/flash`、`/srv/pages`（次の手順で `./ide`、`./flash`、`./pages` をマウント）から直接配信します。
+`caddy/Caddyfile` を作成します（`j-code.org` はお使いのドメインに書き換えてください）。`ide`、`flash`、CI成果物の静的ファイルは、それぞれ Caddy が `/srv/ide`、`/srv/flash`、`/srv/pages`（`./ide`、`./flash`、R2 をマウントした `./pages`）から直接配信します。
 
 ```caddy
 # Gitea (リポジトリ管理)
@@ -146,7 +209,12 @@ services:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile
       - ./ide:/srv/ide:ro
       - ./flash:/srv/flash:ro
-      - ./pages:/srv/pages:ro
+      - type: bind
+        source: ./pages
+        target: /srv/pages
+        read_only: true
+        bind:
+          create_host_path: false
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -211,7 +279,7 @@ volumes:
 ```
 
 
-4. **Gitea連携 & Drone OAuth設定:** 所要時間: 約10分.
+5. **Gitea連携 & Drone OAuth設定:** 所要時間: 約10分.
 1. 最初に Gitea と リバースプロキシを起動します。
 Gitea (rootless イメージ) はUID 1000で動作するため、事前にデータディレクトリの所有者を変更しておかないと `/var/lib/gitea/git is not writable` で起動に失敗します。
 Gitea の設定ファイルは `/etc/gitea/app.ini` に保存されるため、データとは別に `./gitea-config` へ永続化します。既存環境でこの設定を追加する場合は、Compose ファイルを更新してコンテナを再作成する前に、現在のコンテナから設定ファイルをコピーしてください。
@@ -254,7 +322,7 @@ docker compose up -d
 ```
 
 
-5. **ESP32書き込みツール (ESP Web Tools) の配置:** 所要時間: 約5分.
+6. **ESP32書き込みツール (ESP Web Tools) の配置:** 所要時間: 約5分.
 Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリック書き込みを行うための静的ファイルを `~/dev-env/flash/index.html` として設置します。
 
 ```html
@@ -299,8 +367,9 @@ Web Serial APIを利用してChromebookからUSB経由でESP32にワンクリッ
 
 
 * **3. リポジトリ用ビルド定義とマニフェスト作成**
-* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`/publish` と `/ci-cache` は drone-runner の `DRONE_RUNNER_VOLUMES` でマウント。VPS で `mkdir -p ~/dev-env/pages ~/dev-env/cache` が必要）。
+* 生徒が利用する `.drone.yml` は [templates/esp32-arduino/.drone.yml](../templates/esp32-arduino/.drone.yml) をリポジトリ直下にコピーして使う（`.drone.yml` は変更不要。`/publish` は R2 をマウントした `~/dev-env/pages`、`/ci-cache` は VPS の `~/dev-env/cache` に保存）。
 * CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチPush時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信する。
+* R2 はオブジェクトストレージであり、ローカルファイルシステムと同じ原子性・遅延特性はありません。s3fs のアップロード中の一時ファイルとビルドキャッシュ、Docker イメージやログは VPS の容量を使います。大きなファイルや大量の一覧取得を避け、定期的に VPS の空き容量と R2 の利用状況を確認してください。
 * ESP Web Tools書き込み用の `manifest.json`（バイナリ配置URL等の定義）の用意。
 
 
