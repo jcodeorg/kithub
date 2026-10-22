@@ -20,3 +20,5 @@ export RCLONE_CONFIG_R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.co
 # バケット単位のトークンではバケット作成の確認ができないため無効化する
 export RCLONE_S3_NO_CHECK_BUCKET=true
 export RCLONE_S3_CHUNK_SIZE=16M
+# 設定ファイルが無い旨などの通知で出力が読みにくくならないよう、エラーだけ表示する
+export RCLONE_LOG_LEVEL=ERROR
