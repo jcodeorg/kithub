@@ -11,6 +11,8 @@ set -euo pipefail
 REPO_DEV_ENV="$(cd "$(dirname "$0")/.." && pwd)"
 PAGES="$DEV_ENV_DIR/pages"
 
+# OS のパッケージを最新にする (設定ファイルの確認で止まらないよう、既存の設定を残す指定にする)
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade
 # 必要なパッケージを入れる (s3fs: R2 のマウント / rclone: バックアップ)
 sudo apt-get update -qq
 sudo apt-get install -y -qq s3fs rclone rsync curl git openssl python3
@@ -42,7 +44,7 @@ fi
 mkdir -p "$PAGES"
 # fstab に書いて、再起動後も自動でマウントされるようにする (同じパスの古い行は先に削除)
 sudo sed -i "\|[[:space:]]$PAGES[[:space:]]|d" /etc/fstab
-echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
+echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,uid=$(id -u),gid=$(id -g),use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
 
 # pages がマウントできないときは Docker を起動させない (ローカルディスクへの誤書き込み防止)
 sudo mkdir -p /etc/systemd/system/docker.service.d
@@ -50,6 +52,8 @@ printf '[Unit]\nRequiresMountsFor=%s\n' "$PAGES" | sudo tee /etc/systemd/system/
 sudo systemctl daemon-reload
 
 # 実際にマウントし、R2 (fuse.s3fs) に接続できたことを確認する。失敗するとここで中止する
+findmnt -n -T "$PAGES" -o FSTYPE | grep -q 'fuse.s3fs' && sudo umount "$PAGES" || true
+sudo mount "$PAGES"
 findmnt -n -T "$PAGES" -o FSTYPE | grep -q 'fuse.s3fs' || sudo mount "$PAGES"
 findmnt -T "$PAGES" -o SOURCE,FSTYPE,TARGET
 findmnt -n -T "$PAGES" -o FSTYPE | grep -q 'fuse.s3fs'
@@ -82,3 +86,6 @@ if [ "${1:-}" = "--harden-ssh" ]; then
 fi
 
 echo "bootstrap 完了"
+if [ -f /var/run/reboot-required ]; then
+  echo "カーネルなどが更新されました。次の手順に進む前に sudo reboot で再起動し、再ログインしてください"
+fi

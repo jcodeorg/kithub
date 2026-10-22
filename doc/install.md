@@ -82,7 +82,7 @@ chmod 600 ~/dev-env/.r2.env
 bash ~/kithub-repo/dev-env/scripts/bootstrap.sh --harden-ssh
 ```
 
-`bootstrap.sh` は何度実行しても安全です。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
+`bootstrap.sh` は何度実行しても安全です。OS のパッケージも最新に更新します。終了時に「再起動してください」と表示されたら、`sudo reboot` で再起動し、再ログインしてから次へ進みます（R2 のマウントと Docker は自動で復帰します）。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
 
 3. **次へ進む:** 新規構築なら「4」、引っ越しなら「5」へ。
 
@@ -300,3 +300,11 @@ sudo sysctl --system
 4. **Docker の再起動:** 転送ルールを再適用させるため、`sudo systemctl restart docker` を実行します。その後、`cd ~/dev-env && docker compose up -d` で、コンテナを起動し直します。
 5. 手動の `iptables -t nat ... MASQUERADE` 追加は、通常は不要です。Docker が自動で設定します。
 6. それでも通信が不安定（大きなデータだけ失敗する）な場合は、MTU が原因の可能性があります。`daemon.json`、`dev-env` の `dev-net`、`DRONE_RUNNER_NETWORK_OPTS` の 3 か所を、同じ値（1400）にそろえてください。
+
+### 6-7. アップグレード方針
+
+* **OS:** `bootstrap.sh` を再実行すると、OS のパッケージを更新します（`sudo reboot` が必要な場合は表示されます）。月 1 回程度、授業のない時間帯に実施してください。
+* **コンテナ:** 引っ越しと同時には行わず、移行が安定してから別の作業として行います。
+  * 現在のバージョン: Gitea `1.21-rootless`（開発が終了した古い系列です。計画的に新しい版へ更新してください）、PostgreSQL `15`、Drone `2`、Caddy `2`。
+  * 手順: ①`backup.sh` を実行 ② `docker-compose.yml` の `image:` を 1 つずつ変更（Gitea は 1 マイナー版ずつ、リリースノートの破壊的変更を確認）③`docker compose pull && docker compose up -d` ④動作確認（ログイン・push・ビルド）。問題があれば、バックアップから `restore.sh --force` で戻せます。
+  * PostgreSQL のメジャー版（15 → 16 など）は、データの互換性がないため、`docker-compose.yml` のタグを変えるだけでは更新できません。`pg_dump` と `pg_restore` による移行が必要です。
