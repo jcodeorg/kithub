@@ -14,10 +14,9 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BUCKET="R2:$R2_BACKUP_BUCKET"
 DEST="$BUCKET/$TS"
 
-# 通常のバックアップは、失敗しても必ずサービスを再開する
-if ! $FINAL; then
-  trap 'docker compose start gitea drone drone-runner >/dev/null' EXIT
-fi
+# 失敗したときは、通常・--final のどちらでもサービスを再開する。--final は成功したときだけ停止したままにする
+DONE=false
+trap '{ $DONE && $FINAL; } || docker compose start gitea drone drone-runner >/dev/null' EXIT
 
 # 整合性のため、書き込みを行うサービスを止めてから保存する (DB は起動したまま)
 docker compose stop gitea drone drone-runner
@@ -49,6 +48,7 @@ rclone lsf --dirs-only "$BUCKET" | sort | head -n -7 | while read -r d; do
 done
 
 echo "バックアップ完了: $TS"
+DONE=true
 if $FINAL; then
   echo "旧サーバーのサービスは停止したままです。再開しないでください (新旧での二重運用を防ぐため)"
 fi

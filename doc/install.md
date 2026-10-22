@@ -119,7 +119,8 @@ Gitea を起動し、管理者 `gitea-admin` と Drone 用の OAuth アプリを
 旧サーバーにも、スクリプトと `.r2.env`（バックアップ用の 3 項目だけ）を用意します。
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git rclone
+sudo apt-get update && sudo apt-get install -y git unzip
+curl -fsSL https://rclone.org/install.sh | sudo bash
 git clone --depth 1 https://github.com/jcodeorg/kithub.git ~/kithub-repo
 mkdir -p ~/dev-env && cp -r ~/kithub-repo/dev-env/scripts ~/dev-env/
 cat > ~/dev-env/.r2.env <<'EOF'

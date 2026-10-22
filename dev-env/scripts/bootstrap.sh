@@ -15,7 +15,12 @@ PAGES="$DEV_ENV_DIR/pages"
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade
 # 必要なパッケージを入れる (s3fs: R2 のマウント / rclone: バックアップ)
 sudo apt-get update -qq
-sudo apt-get install -y -qq s3fs rclone rsync curl git openssl python3
+sudo apt-get install -y -qq s3fs rsync curl git openssl python3 unzip
+# rclone は apt 版が古く、R2 へのストリーミング保存が失敗する (501 NotImplemented) ため、公式の最新版を入れる
+if ! rclone version 2>/dev/null | head -1 | grep -qE 'v1\.(6[6-9]|[7-9][0-9])|v[2-9]\.'; then
+  sudo apt-get remove -y -qq rclone 2>/dev/null || true
+  curl -fsSL https://rclone.org/install.sh | sudo bash
+fi
 # Docker が無い場合だけ導入する (XServer の Docker テンプレートなら導入済み)
 if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
   sudo apt-get install -y -qq docker.io docker-compose-v2
