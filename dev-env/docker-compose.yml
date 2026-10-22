@@ -48,7 +48,9 @@ services:
       - USER_GID=1000
       - GITEA__server__ROOT_URL=https://gitea.j-code.org/
       - GITEA__server__DOMAIN=gitea.j-code.org
-      - GITEA__server__SSH_PORT=2222
+      # Git の SSH は使わない (HTTPS のみ)。2222 番は公開しない
+      - GITEA__server__DISABLE_SSH=true
+      - GITEA__server__START_SSH_SERVER=false
       # 初期設定画面を省略する (管理者は scripts/init-gitea.sh が作成する)
       - GITEA__security__INSTALL_LOCK=true
       # PostgreSQL接続設定（環境変数による初期化・指定）
@@ -60,8 +62,6 @@ services:
     volumes:
       - ./gitea:/var/lib/gitea
       - ./gitea-config:/etc/gitea
-    ports:
-      - "2222:2222"
     depends_on:
       - db
     networks:
