@@ -22,3 +22,12 @@ export RCLONE_S3_NO_CHECK_BUCKET=true
 export RCLONE_S3_CHUNK_SIZE=16M
 # 設定ファイルが無い旨などの通知で出力が読みにくくならないよう、エラーだけ表示する
 export RCLONE_LOG_LEVEL=ERROR
+
+# Docker を sudo なしで使えないと、処理の途中で止まるため、最初に確認する
+require_docker() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker を使えません。次を実行し、一度ログアウトして入り直してから、もう一度実行してください:" >&2
+    echo "  sudo usermod -aG docker $USER" >&2
+    exit 1
+  fi
+}

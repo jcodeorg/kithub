@@ -77,6 +77,12 @@ fi
 sudo systemctl enable docker
 sudo systemctl restart docker
 
+# docker グループが後から作られた場合に備え、実行ユーザーを追加する (反映には再ログインが必要)
+if getent group docker >/dev/null && ! id -nG | grep -qw docker; then
+  sudo usermod -aG docker "$USER"
+  echo "docker グループに追加しました。一度ログアウトして ssh で入り直してから、次の手順に進んでください"
+fi
+
 # 指定時のみ: root ログインとパスワード認証を無効にする (鍵が無いと締め出されるため事前確認する)
 if [ "${1:-}" = "--harden-ssh" ]; then
   if [ ! -s "$HOME/.ssh/authorized_keys" ]; then

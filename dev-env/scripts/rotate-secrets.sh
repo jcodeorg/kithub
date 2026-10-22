@@ -9,6 +9,7 @@
 # 入れ替えないもの: SECRET_KEY (暗号化済みのデータが読めなくなるため)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+require_docker
 
 ADMIN_USER="${GITEA_ADMIN_USER:-gitea-admin}"
 cd "$DEV_ENV_DIR"

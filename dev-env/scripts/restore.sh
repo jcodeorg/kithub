@@ -6,6 +6,7 @@
 # drone-runner は、DNS 切り替え前に旧サーバーのジョブを奪わないよう、ここでは起動しない。
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+require_docker
 
 FORCE=false
 if [ "${1:-}" = "--force" ]; then FORCE=true; shift; fi

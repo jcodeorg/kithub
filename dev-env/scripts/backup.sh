@@ -4,6 +4,7 @@
 #   --final : 引っ越し用。完了後も、このサーバーのサービスを停止したままにする
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+require_docker
 
 FINAL=false
 [ "${1:-}" = "--final" ] && FINAL=true
