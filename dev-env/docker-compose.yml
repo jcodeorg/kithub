@@ -7,7 +7,7 @@ networks:
 services:
   # --- リバースプロキシ (HTTPS自動化) ---
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11-alpine
     restart: always
     ports:
       - "80:80"
@@ -28,20 +28,20 @@ services:
 
   # --- データベース (Gitea用 PostgreSQL) ---
   db:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     restart: always
     environment:
       - POSTGRES_USER=gitea
       - POSTGRES_PASSWORD=${DB_PASSWORD} # .env で管理 (scripts/init-gitea.sh または rotate-secrets.sh が生成)
       - POSTGRES_DB=gitea
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - ./postgres_data:/var/lib/postgresql
     networks:
       - dev-net
 
   # --- Gitリポジトリ管理 (Gitea) ---
   gitea:
-    image: gitea/gitea:1.21-rootless
+    image: gitea/gitea:28.2-rootless
     restart: always
     environment:
       - USER_UID=1000
@@ -69,7 +69,7 @@ services:
 
   # --- 自動ビルド (Drone CI) ---
   drone:
-    image: drone/drone:2
+    image: drone/drone:2.28
     restart: always
     environment:
       - DRONE_GITEA_SERVER=https://gitea.j-code.org
@@ -85,7 +85,7 @@ services:
 
   # --- Drone CI Runner (一斉ビルド負荷制御) ---
   drone-runner:
-    image: drone/drone-runner-docker:1
+    image: drone/drone-runner-docker:1.8
     restart: always
     environment:
       - DRONE_RPC_PROTO=https
