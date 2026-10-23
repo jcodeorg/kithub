@@ -18,9 +18,9 @@
 
 ## 1. 動作環境
 
-* **VPS:** XServer VPS（4コア / 4GB RAM 以上、Ubuntu 24.04 LTS、「Docker」セットアップスクリプトを選択）
+* **VPS:** XServer VPS（4コア / 4GB RAM 以上、Ubuntu 26.04 LTS
 * **ユーザー名:** OS の一般ユーザーは `kithub`、Gitea の管理者アカウントは `gitea-admin`
-* **ドメイン（A レコードを VPS の IP に向ける）:** `gitea.j-code.org`（Gitea）/ `drone.j-code.org`（Drone CI）/ `users.j-code.org`（CI成果物の配信）。`ide` / `flash` を使う場合はそれも。
+* **ドメイン（A レコードを VPS の IP に向ける）:** `gitea.j-code.org`（Gitea）/ `drone.j-code.org`（Drone CI）/ `users.j-code.org`（CI成果物の配信）。
 * **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントし、VPS の容量を使いません。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・Drone・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
 
 ---
@@ -57,6 +57,8 @@
 1. **root でログインし、一般ユーザー `kithub` を作る**（sudo / docker 権限と SSH 公開鍵を引き継ぎます）。
 
 ```bash
+sudo apt update
+sudo apt upgrade -y
 curl -fsSL https://raw.githubusercontent.com/jcodeorg/kithub/main/dev-env/scripts/create-user.sh | bash
 ```
 
