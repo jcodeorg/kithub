@@ -27,10 +27,12 @@ RUN arduino-cli core update-index \
 # ジョブは開始時にこれを自分用にコピーして使うため、同時実行でもキャッシュが競合・汚染されない。
 # ワークフローと同じ FQBN でビルドすること (キャッシュはボード設定ごとに分かれる)。
 COPY warmup /tmp/warmup
-RUN ARDUINO_BUILD_CACHE_PATH=/opt/arduino/build-cache-base arduino-cli compile \
+RUN arduino-cli config set build_cache.path /opt/arduino/build-cache-base \
+ && arduino-cli compile \
       --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
       --build-path /opt/arduino/build-base \
       --output-dir /tmp/warmup-out \
       /tmp/warmup \
+ && ls /opt/arduino/build-cache-base /opt/arduino/build-base >/dev/null \
  && rm -rf /tmp/warmup /tmp/warmup-out \
  && chmod -R a+rX /opt/arduino/build-cache-base /opt/arduino/build-base
