@@ -161,6 +161,15 @@ bash ~/dev-env/scripts/backup.sh --final
 bash ~/dev-env/scripts/restore.sh
 ```
 
+   **`docker-compose.yml` を新しい版にして復元する場合:** バックアップには旧サーバーの `docker-compose.yml` が含まれます。最新版（リポジトリの版）に差し替えるには、リポジトリを更新し、リポジトリ側のスクリプトを実行します。内容が違うときだけ差し替わり、バックアップ版は `~/dev-env/docker-compose.yml.from-backup` に残ります。`~/dev-env/scripts/` から実行すると、差し替えは行われません。
+
+```bash
+git -C ~/kithub-repo pull --ff-only origin main
+bash ~/kithub-repo/dev-env/scripts/restore.sh
+```
+
+   旧サーバーで `docker-compose.yml` を手で変更していた場合は、その変更が失われます。必要なら `docker-compose.yml.from-backup` と見比べて、リポジトリ側にも反映してください。
+
 3. **新サーバー**: パスワード・トークンを新しいものに入れ替えます。DNS 変更の前に行うため、旧サーバーにも利用者にも影響しません。
 
 ```bash
