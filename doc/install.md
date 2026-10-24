@@ -165,7 +165,7 @@ bash ~/dev-env/scripts/restore.sh
 
 ```bash
 git -C ~/kithub-repo pull --ff-only origin main
-bash ~/kithub-repo/dev-env/scripts/restore.sh
+bash ~/kithub-repo/dev-env/scripts/restore.sh --force
 ```
 
    旧サーバーで `docker-compose.yml` を手で変更していた場合は、その変更が失われます。必要なら `docker-compose.yml.from-backup` と見比べて、リポジトリ側にも反映してください。
