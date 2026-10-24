@@ -49,12 +49,24 @@ jobs:
           CACHE_DIR="$RUNNER_TEMP/arduino-build-cache"
           mkdir -p "$CACHE_DIR"
           cp -a /opt/arduino/build-cache-base/. "$CACHE_DIR/"
+          # 非推奨の --build-cache-path ではなく、設定でキャッシュの場所を指定します。
           arduino-cli config set build_cache.path "$CACHE_DIR"
-          # 対象ボードの設定を指定してファームウェアをビルドします。
+          # キャッシュの自動削除 (purge) でコピーしたベースが消えないよう、無効にします。
+          export ARDUINO_BUILD_CACHE_COMPILATIONS_BEFORE_PURGE=0
+          # コアのキャッシュ (core.a) の数を、ビルド前に控えます。
+          CORES_BEFORE=$(find "$CACHE_DIR/cores" -name '*.a' 2>/dev/null | wc -l)
+          # 対象ボードの設定を指定してファームウェアをビルドします。ログが長くなるため -v は付けません。
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
             --output-dir build \
             firmware/firmware.ino
+          # ビルド前からコアのキャッシュがあり、増えていなければ、再利用できています。
+          CORES_AFTER=$(find "$CACHE_DIR/cores" -name '*.a' 2>/dev/null | wc -l)
+          if [ "$CORES_BEFORE" -gt 0 ] && [ "$CORES_AFTER" -eq "$CORES_BEFORE" ]; then
+            echo "コアのキャッシュを利用しました (core.a: $CORES_BEFORE 個)"
+          else
+            echo "警告: コアのキャッシュが使われていない可能性があります (ビルド前 $CORES_BEFORE 個 → 後 $CORES_AFTER 個)"
+          fi
 
           # 出力された長いファイル名を、書き込みや配布で使う名前にそろえます。
           if [ -f build/firmware.ino.bootloader.bin ]; then
