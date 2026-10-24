@@ -25,13 +25,9 @@ jobs:
     # このジョブ全体を Linux 環境で実行します。
     runs-on: ubuntu-latest
     container:
-      # actions/checkout などの Actions は Node.js で動くため、Node.js を含むイメージが必要です。
-      # このイメージは Node.js・Git・curl・Python・pip も含み、本ワークフローの各処理に対応します。
-      image: catthehacker/ubuntu:act-22.04
-      # Docker の名前付きボリュームを /ci-cache に接続します。
-      # 同じ Docker デーモンを使うジョブ同士で、Arduino のツールやライブラリを共有できます。
-      volumes:
-        - arduino-esp32-build-cache:/ci-cache
+      # Arduino CLI・ESP32 コア・ライブラリ・boto3 を焼き込んだ専用イメージです (dev-env/scripts/build-image.sh で作成)。
+      # Node.js も含むため actions/checkout が動きます。
+      image: kithub/esp32-arduino:latest
 
     steps:
       # リポジトリのソースコードをジョブ内に取得します。
@@ -43,64 +39,14 @@ jobs:
         run: |
           # どのコマンドが失敗しても、後続の処理を続けずにジョブを失敗させます。
           set -euo pipefail
-          # 共有ボリュームをキャッシュのルートとして使います。
-          CACHE_ROOT=/ci-cache
-          mkdir -p "$CACHE_ROOT/bin" "$CACHE_ROOT/data" "$CACHE_ROOT/user/libraries" "$CACHE_ROOT/pylib"
-          # キャッシュ内の Arduino CLI を優先して実行し、pyserial も Python から見つけられるようにします。
-          export PATH="$CACHE_ROOT/bin:$PATH"
-          export PYTHONPATH="$CACHE_ROOT/pylib${PYTHONPATH:+:$PYTHONPATH}"
-
-          # 共有キャッシュを同時に変更すると破損する可能性があるため、
-          # ツールやライブラリの確認・導入中は全ジョブでロックを共有します。
-          exec 9>"$CACHE_ROOT/.build.lock"
-          echo "共有 Arduino キャッシュのロックを取得します (最大30分)"
-          flock -w 1800 9
-
-          # Arduino CLI は共有キャッシュにまだない場合だけダウンロードします。
-          if [ ! -x "$CACHE_ROOT/bin/arduino-cli" ]; then
-            curl -fsSL --ipv4 --connect-timeout 20 --retry 5 --retry-delay 5 --retry-all-errors https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz | tar -xz -C "$CACHE_ROOT/bin" arduino-cli
-          fi
+          # ツール・ボードコア・ライブラリはイメージに入っているため、導入処理は不要です。
           arduino-cli version
-
-          # ESP32 の書き込みツールが使う pyserial を共有キャッシュに用意します。
-          if [ ! -d "$CACHE_ROOT/pylib/serial" ]; then
-            python3 -m pip install --no-cache-dir --disable-pip-version-check --target "$CACHE_ROOT/pylib" pyserial
-          fi
-
-          # Arduino CLI のボード情報・ユーザーライブラリを共有キャッシュに向けます。
-          arduino-cli config init --overwrite
-          arduino-cli config set directories.data "$CACHE_ROOT/data"
-          arduino-cli config set directories.user "$CACHE_ROOT/user"
-          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          # 指定したバージョンの ESP32 ボードコアがなければインストールします。
-          if [ ! -d "$CACHE_ROOT/data/packages/esp32/hardware/esp32/2.0.14" ]; then
-            arduino-cli core update-index
-            arduino-cli core install esp32:esp32@2.0.14
-          fi
-
-          # ESP32-A2DP ライブラリは Git から取得し、キャッシュがあれば最新にします。
-          # 想定外の中身が同じ場所にある場合は、誤って上書きせずエラーにします。
-          if [ -d "$CACHE_ROOT/user/libraries/ESP32-A2DP/.git" ]; then
-            git -C "$CACHE_ROOT/user/libraries/ESP32-A2DP" pull --ff-only
-          elif [ -e "$CACHE_ROOT/user/libraries/ESP32-A2DP" ]; then
-            echo "Cached ESP32-A2DP directory is not a Git repository" >&2
-            exit 1
-          else
-            git clone --depth 1 https://github.com/pschatzmann/ESP32-A2DP.git "$CACHE_ROOT/user/libraries/ESP32-A2DP"
-          fi
-          # スケッチが使う Arduino ライブラリをインストールします。
-          arduino-cli lib install "U8g2"
-          arduino-cli lib install "Adafruit AHTX0"
-          arduino-cli lib install "BH1750"
-          arduino-cli lib install "Adafruit NeoPixel"
-
-          # 共有ツールの準備が終わったのでロックを解放します。
-          # コンパイルを待つ他のジョブが、共有ライブラリを準備できるようにします。
-          flock -u 9
-
-          # コンパイルの一時キャッシュはジョブごとに分離します。
-          # 共有すると同時ビルドが同じファイルを書き換えるためです。
-          arduino-cli config set build_cache.path "$GITHUB_WORKSPACE/.arduino-build-cache"
+          # コンパイルキャッシュは、イメージに焼き込んだベースをジョブ専用の場所へコピーして使います。
+          # ジョブごとに独立するため、40人が同時にビルドしても競合せず、他のジョブのキャッシュも書き換えません。
+          CACHE_DIR="$RUNNER_TEMP/arduino-build-cache"
+          mkdir -p "$CACHE_DIR"
+          cp -a /opt/arduino/build-cache-base/. "$CACHE_DIR/"
+          arduino-cli config set build_cache.path "$CACHE_DIR"
           # 対象ボードの設定を指定してファームウェアをビルドします。
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
@@ -143,10 +89,8 @@ jobs:
             VERSION=latest
           fi
           export VERSION
-          # boto3 は Python から S3 互換の R2 API を呼び出すためのライブラリです。
-          python3 -m pip install --disable-pip-version-check --target "$RUNNER_TEMP/r2-python" boto3
-          # Python で R2 に接続し、成果物と書き込み用 manifest.json を作成・アップロードします。
-          PYTHONPATH="$RUNNER_TEMP/r2-python${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+          # Python で R2 に接続し、成果物と書き込み用 manifest.json を作成・アップロードします (boto3 はイメージに導入済み)。
+          python3 - <<'PY'
           import json
           import os
 

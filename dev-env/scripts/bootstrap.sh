@@ -73,6 +73,7 @@ mkdir -p "$DEV_ENV_DIR/caddy" "$DEV_ENV_DIR/act_runner/data"
 # スクリプト自体も運用ディレクトリにコピーする (cron やバックアップから使うため)
 if [ "$REPO_DEV_ENV" != "$DEV_ENV_DIR" ]; then
   rsync -a "$REPO_DEV_ENV/scripts/" "$DEV_ENV_DIR/scripts/"
+  rsync -a "$REPO_DEV_ENV/build-image/" "$DEV_ENV_DIR/build-image/"
 fi
 
 # MTU と起動条件を反映するため Docker を再起動し、自動起動を有効にする

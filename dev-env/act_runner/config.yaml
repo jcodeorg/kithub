@@ -11,7 +11,6 @@ runner:
 container:
   # ジョブコンテナを dev-net に参加させ、http://gitea:3000 を名前解決できるようにする
   network: "dev-net"
-  # ワークフローの container.volumes で使う名前付きボリュームを許可する
-  valid_volumes:
-    - arduino-esp32-build-cache
   options: ""
+  # build-image.sh でホストにビルドした kithub/esp32-arduino を、レジストリから取得せず使う
+  force_pull: false

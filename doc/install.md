@@ -114,7 +114,7 @@ Gitea を起動し、管理者 `gitea-admin` を作成して、Actions の runne
 **前提**
 * 旧・新どちらも Gitea の管理者は `gitea-admin` とします。名前は DB ごと引き継がれるため、旧サーバーの管理者名が違う場合は、バックアップ前に Gitea の「サイト管理 → ユーザーアカウント」で変更しておいてください。
 * `pages`（公開成果物）と `gitea-storage`（添付・アバター・LFS など）は R2 にあるため、コピー不要です。新サーバーは同じバケットを使います。`gitea-storage` の接続情報は `app.ini` の `[storage]` に入っており、`backup.sh` / `restore.sh` で引き継がれます（旧サーバーの `.r2.env` に storage の項目は不要）。ただし旧サーバーと同じ秘密情報になるため、5-3 の `rotate-secrets.sh` で入れ替えます。
-* 引き継がれないもの: ビルドキャッシュ（Docker ボリューム `arduino-esp32-build-cache`。初回ビルドだけ遅くなります）、runner の登録情報（`go-live.sh` が登録し直します）、Docker イメージ（自動で再取得されます）。
+* 引き継がれないもの: ビルド用イメージ（新サーバーで `build-image.sh` の実行が必要です。イメージにコンパイル済みのベースキャッシュが入っています）、runner の登録情報（`go-live.sh` が登録し直します）。
 
 ### 5-1. 旧サーバーの準備（サービスを止めずにできる）
 
@@ -211,7 +211,8 @@ DNS を旧サーバーの IP に戻し、旧サーバーで `cd ~/dev-env && doc
 
 ### 6-2. 生徒向けの設定
 
-* 生徒が使うワークフローは [templates/.gitea/workflows/build-and-release.yml](../templates/.gitea/workflows/build-and-release.yml) を、リポジトリの `.gitea/workflows/` にコピーします（変更不要）。ビルドキャッシュは Docker ボリューム `arduino-esp32-build-cache` に保存されます。R2 への公開には、リポジトリまたは組織の Actions シークレットに `R2_ACCOUNT_ID`・`R2_BUCKET`・`R2_ACCESS_KEY_ID`・`R2_SECRET_ACCESS_KEY` を登録します（リリース作成には自動発行の `GITHUB_TOKEN` を使うため、追加のトークンは不要です）。
+* ビルドは専用イメージ `kithub/esp32-arduino:latest`（Arduino CLI・ESP32 コア・ライブラリ入り）で動きます。サーバーで一度 `bash ~/dev-env/scripts/build-image.sh` を実行してビルドしてください（ボードコアやライブラリを更新するときも再実行します。引っ越し後の新サーバーでも必要です）。
+* 生徒が使うワークフローは [templates/.gitea/workflows/build-and-release.yml](../templates/.gitea/workflows/build-and-release.yml) を、リポジトリの `.gitea/workflows/` にコピーします（変更不要）。ビルドキャッシュはイメージに焼き込んだ読み取り専用のベースを、ジョブごとにコピーして使います（同時ビルドでも競合しません）。R2 への公開には、リポジトリまたは組織の Actions シークレットに `R2_ACCOUNT_ID`・`R2_BUCKET`・`R2_ACCESS_KEY_ID`・`R2_SECRET_ACCESS_KEY` を登録します（リリース作成には自動発行の `GITHUB_TOKEN` を使うため、追加のトークンは不要です）。
 * CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチ push 時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信されます。
 * R2 はオブジェクトストレージで、ローカルファイルシステムと同じ原子性・遅延特性ではありません。s3fs のアップロード中の一時ファイル、ビルドキャッシュ、Docker イメージやログは VPS の容量を使います。定期的に VPS の空き容量と R2 の利用状況を確認してください。
 

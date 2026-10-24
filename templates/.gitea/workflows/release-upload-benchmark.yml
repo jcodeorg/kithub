@@ -1,0 +1,79 @@
+# リリース添付 (GITHUB_TOKEN) へのアップロード/ダウンロード性能を測る検証用ワークフロー。
+# 手動実行 (workflow_dispatch) 専用。ビルド後の成果物 (約1MB台×3) と、大きめのダミーを送って計測します。
+# 計測用のリリース (bench-<run番号>) は最後に削除します。
+name: Release upload benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      big_mb:
+        description: "大きいダミーファイルのサイズ (MB)"
+        default: "8"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    container:
+      image: kithub/esp32-arduino:latest
+
+    steps:
+      - name: Measure release attachment upload
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BIG_MB: ${{ inputs.big_mb }}
+        run: |
+          set -euo pipefail
+          API_URL="${GITHUB_SERVER_URL}/api/v1"
+          AUTH="Authorization: token $GITEA_TOKEN"
+          TAG="bench-${GITHUB_RUN_NUMBER}"
+
+          # 実際の成果物に近いサイズのダミー (ESP32 の firmware.bin は 1MB 前後) と、大きめのダミーを作る
+          mkdir -p bench
+          head -c 20000   /dev/urandom > bench/bootloader.bin
+          head -c 3072    /dev/urandom > bench/partitions.bin
+          head -c 1500000 /dev/urandom > bench/firmware.bin
+          head -c "$((BIG_MB * 1024 * 1024))" /dev/urandom > bench/big.bin
+
+          now() { date +%s.%N; }
+          elapsed() { python3 -c "import sys; print(f'{float(sys.argv[2])-float(sys.argv[1]):.2f}s')" "$1" "$2"; }
+
+          # 1) リリース作成 (タグは既定ブランチの先頭に作られる)
+          t0=$(now)
+          RELEASE=$(curl -fsS -X POST "$API_URL/repos/$GITHUB_REPOSITORY/releases" \
+            -H "$AUTH" -H "Content-Type: application/json" \
+            --data "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"benchmark\",\"prerelease\":true}")
+          RELEASE_ID=$(printf '%s' "$RELEASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          echo "リリース作成: $(elapsed "$t0" "$(now)")"
+
+          # 2) 添付のアップロード
+          for f in bootloader.bin partitions.bin firmware.bin big.bin; do
+            size=$(stat -c %s "bench/$f")
+            t0=$(now)
+            curl -fsS -o /dev/null -X POST \
+              "$API_URL/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$f" \
+              -H "$AUTH" -H "Content-Type: application/octet-stream" --data-binary "@bench/$f"
+            echo "upload   $f ($size bytes): $(elapsed "$t0" "$(now)")"
+          done
+
+          # 3) 認証なしでのダウンロード (公開リポジトリなら可。非公開なら 404 になり、その旨を表示する)
+          for f in firmware.bin big.bin; do
+            t0=$(now)
+            if curl -fsSL -o "bench/dl-$f" "${GITHUB_SERVER_URL}/$GITHUB_REPOSITORY/releases/download/$TAG/$f"; then
+              echo "download $f: $(elapsed "$t0" "$(now)")"
+              cmp "bench/$f" "bench/dl-$f" && echo "  内容一致"
+            else
+              echo "download $f: 認証なしでは取得できません (非公開リポジトリ)"
+            fi
+          done
+
+          # 4) 後片付け: リリースとタグを削除する
+          curl -fsS -X DELETE "$API_URL/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -H "$AUTH"
+          curl -fsS -X DELETE "$API_URL/repos/$GITHUB_REPOSITORY/tags/$TAG" -H "$AUTH"
+          echo "計測用リリースを削除しました"
