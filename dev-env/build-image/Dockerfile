@@ -21,14 +21,16 @@ RUN arduino-cli core update-index \
  && git clone --depth 1 https://github.com/pschatzmann/ESP32-A2DP.git /opt/arduino/user/libraries/ESP32-A2DP \
  && rm -rf /opt/arduino/staging
 
-# 読み取り専用のベースキャッシュ。ESP32 コアを事前コンパイルして焼き込む。
+# 読み取り専用のベース。ESP32 コアとライブラリを事前コンパイルして焼き込む。
+#   build-cache-base: コア (core.a) のキャッシュ
+#   build-base      : ビルドディレクトリ一式 (ライブラリのオブジェクトを含む)
 # ジョブは開始時にこれを自分用にコピーして使うため、同時実行でもキャッシュが競合・汚染されない。
 # ワークフローと同じ FQBN でビルドすること (キャッシュはボード設定ごとに分かれる)。
 COPY warmup /tmp/warmup
-RUN arduino-cli compile \
+RUN ARDUINO_BUILD_CACHE_PATH=/opt/arduino/build-cache-base arduino-cli compile \
       --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
-      --build-cache-path /opt/arduino/build-cache-base \
+      --build-path /opt/arduino/build-base \
       --output-dir /tmp/warmup-out \
       /tmp/warmup \
  && rm -rf /tmp/warmup /tmp/warmup-out \
- && chmod -R a+rX /opt/arduino/build-cache-base
+ && chmod -R a+rX /opt/arduino/build-cache-base /opt/arduino/build-base

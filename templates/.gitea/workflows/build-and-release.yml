@@ -44,11 +44,16 @@ jobs:
           set -euo pipefail
           # ツール・ボードコア・ライブラリはイメージに入っているため、導入処理は不要です。
           arduino-cli version
-          # コンパイルキャッシュは、イメージに焼き込んだベースをジョブ専用の場所へコピーして使います。
+          # コンパイルのベースは、イメージに焼き込んだものをジョブ専用の場所へコピーして使います。
           # ジョブごとに独立するため、40人が同時にビルドしても競合せず、他のジョブのキャッシュも書き換えません。
+          #   コア (core.a) のキャッシュと、ライブラリのオブジェクトを含むビルドディレクトリの両方をコピーします。
           CACHE_DIR="$RUNNER_TEMP/arduino-build-cache"
-          mkdir -p "$CACHE_DIR"
+          BUILD_DIR="$RUNNER_TEMP/arduino-build"
+          T0=$(date +%s.%N)
+          mkdir -p "$CACHE_DIR" "$BUILD_DIR"
           cp -a /opt/arduino/build-cache-base/. "$CACHE_DIR/"
+          cp -a /opt/arduino/build-base/. "$BUILD_DIR/"
+          T1=$(date +%s.%N)
           # 非推奨の --build-cache-path ではなく、設定でキャッシュの場所を指定します。
           arduino-cli config set build_cache.path "$CACHE_DIR"
           # キャッシュの自動削除 (purge) でコピーしたベースが消えないよう、無効にします。
@@ -58,8 +63,10 @@ jobs:
           # 対象ボードの設定を指定してファームウェアをビルドします。ログが長くなるため -v は付けません。
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
+            --build-path "$BUILD_DIR" \
             --output-dir build \
             firmware/firmware.ino
+          T2=$(date +%s.%N)
           # ビルド前からコアのキャッシュがあり、増えていなければ、再利用できています。
           CORES_AFTER=$(find "$CACHE_DIR/cores" -name '*.a' 2>/dev/null | wc -l)
           if [ "$CORES_BEFORE" -gt 0 ] && [ "$CORES_AFTER" -eq "$CORES_BEFORE" ]; then
@@ -67,6 +74,9 @@ jobs:
           else
             echo "警告: コアのキャッシュが使われていない可能性があります (ビルド前 $CORES_BEFORE 個 → 後 $CORES_AFTER 個)"
           fi
+          # 所要時間の内訳。コピーに時間がかかるか、コンパイルに時間がかかるかを切り分けます。
+          python3 -c 'import sys; a,b,c=map(float,sys.argv[1:]); print(f"所要時間: ベースのコピー {b-a:.1f}s / コンパイル {c-b:.1f}s")' "$T0" "$T1" "$T2"
+          du -sh "$BUILD_DIR" | sed 's/^/ビルドディレクトリのサイズ: /'
 
           # 出力された長いファイル名を、書き込みや配布で使う名前にそろえます。
           if [ -f build/firmware.ino.bootloader.bin ]; then
