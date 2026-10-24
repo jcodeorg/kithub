@@ -8,6 +8,9 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 require_docker
 
+# cd の前に、このスクリプトがあるリポジトリ内の dev-env を求める (相対パスで実行された場合に備える)
+REPO_DEV_ENV="$(cd "$(dirname "$0")/.." && pwd)"
+
 FORCE=false
 if [ "${1:-}" = "--force" ]; then FORCE=true; shift; fi
 TS="${1:-$(rclone cat "R2:$R2_BACKUP_BUCKET/latest" | tr -d '[:space:]')}"
@@ -34,6 +37,16 @@ fi
 
 # ファイル一式を展開する
 rclone cat "$SRC/files.tgz" | sudo tar -xzf - -C "$DEV_ENV_DIR"
+
+# docker-compose.yml は、バックアップのものではなくリポジトリの最新版に差し替える
+# (バックアップのものは docker-compose.yml.from-backup に残す)。運用ディレクトリ内のスクリプトから実行した場合は差し替えない
+if [ "$REPO_DEV_ENV" != "$DEV_ENV_DIR" ] && [ -f "$REPO_DEV_ENV/docker-compose.yml" ]; then
+  if ! sudo cmp -s "$REPO_DEV_ENV/docker-compose.yml" docker-compose.yml; then
+    [ -e docker-compose.yml ] && sudo mv docker-compose.yml docker-compose.yml.from-backup
+    sudo cp "$REPO_DEV_ENV/docker-compose.yml" docker-compose.yml
+    echo "docker-compose.yml をリポジトリの最新版に差し替えました (バックアップ版: docker-compose.yml.from-backup)"
+  fi
+fi
 
 # 復元元と UID / パスが違っても動くように所有者と .env を整える
 sudo chown -R 1000:1000 gitea gitea-config
