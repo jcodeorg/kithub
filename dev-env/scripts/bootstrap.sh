@@ -10,6 +10,7 @@ set -euo pipefail
 # このスクリプトがあるリポジトリ内の dev-env と、運用ディレクトリ (既定 ~/dev-env)
 REPO_DEV_ENV="$(cd "$(dirname "$0")/.." && pwd)"
 PAGES="$DEV_ENV_DIR/pages"
+S3FS_CACHE="$DEV_ENV_DIR/s3fs-cache"
 
 # OS のパッケージを最新にする (設定ファイルの確認で止まらないよう、既存の設定を残す指定にする)
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade
@@ -44,12 +45,12 @@ if [ ! -f /etc/docker/daemon.json ]; then
   echo '{ "mtu": 1400 }' | sudo tee /etc/docker/daemon.json >/dev/null
 fi
 
-# pages (公開成果物) を R2 に接続する。VPS のディスクは使わない
+# pages (公開成果物) を R2 に接続する。データ用のローカルキャッシュだけ VPS のディスクを使う
 (umask 077; echo "$R2_PAGES_ACCESS_KEY_ID:$R2_PAGES_SECRET_ACCESS_KEY" | sudo tee /etc/passwd-s3fs >/dev/null)
-mkdir -p "$PAGES"
+mkdir -p "$PAGES" "$S3FS_CACHE"
 # fstab に書いて、再起動後も自動でマウントされるようにする (同じパスの古い行は先に削除)
 sudo sed -i "\|[[:space:]]$PAGES[[:space:]]|d" /etc/fstab
-echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,uid=$(id -u),gid=$(id -g),use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
+echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,uid=$(id -u),gid=$(id -g),use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,use_cache=$S3FS_CACHE,ensure_diskfree=1024,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
 
 # pages がマウントできないときは Docker を起動させない (ローカルディスクへの誤書き込み防止)
 sudo mkdir -p /etc/systemd/system/docker.service.d

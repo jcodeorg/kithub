@@ -21,7 +21,7 @@
 * **VPS:** XServer VPS（4コア / 4GB RAM 以上、Ubuntu 26.04 LTS
 * **ユーザー名:** OS の一般ユーザーは `kithub`、Gitea の管理者アカウントは `gitea-admin`
 * **ドメイン（A レコードを VPS の IP に向ける）:** `gitea.j-code.org`（Gitea）/ `drone.j-code.org`（Drone CI）/ `users.j-code.org`（CI成果物の配信）。
-* **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントし、VPS の容量を使いません。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・Drone・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
+* **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントします。R2 がデータの保存先ですが、s3fs のローカルキャッシュ（`~/dev-env/s3fs-cache`）に VPS のディスクを使います。空き容量を 1 GiB 確保する設定です。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・Drone・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
 
 ---
 
@@ -84,7 +84,7 @@ chmod 600 ~/dev-env/.r2.env
 bash ~/kithub-repo/dev-env/scripts/bootstrap.sh --harden-ssh
 ```
 
-`bootstrap.sh` は何度実行しても安全です。OS のパッケージも最新に更新します。終了時に「再起動してください」と表示されたら、`sudo reboot` で再起動し、再ログインしてから次へ進みます（R2 のマウントと Docker は自動で復帰します）。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
+`bootstrap.sh` は何度実行しても安全です。OS のパッケージも最新に更新します。s3fs のデータキャッシュは `~/dev-env/s3fs-cache` に置かれ、キャッシュ利用時もディスクの空き容量を 1 GiB 以上残します。キャッシュは R2 へのアップロードをなくすものではないため、書き込み完了時の転送時間は残ります。終了時に「再起動してください」と表示されたら、`sudo reboot` で再起動し、再ログインしてから次へ進みます（R2 のマウントと Docker は自動で復帰します）。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
 
 3. **次へ進む:** 新規構築なら「4」、引っ越しなら「5」へ。
 
