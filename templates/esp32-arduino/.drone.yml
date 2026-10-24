@@ -110,11 +110,11 @@ steps:
         fi
         DEST="/publish/$DRONE_REPO/$VERSION"
         mkdir -p "$DEST"
-        cp build/bootloader.bin build/partitions.bin build/firmware.bin "$DEST/"
+        MANIFEST=$(mktemp)
         BOOTLOADER_OFFSET=$((0x1000))
         PARTITIONS_OFFSET=$((0x8000))
         FIRMWARE_OFFSET=$((0x10000))
-        cat > "$DEST/manifest.json" <<EOF
+        cat > "$MANIFEST" <<EOF
         {
           "name": "firmware",
           "version": "$VERSION",
@@ -131,14 +131,29 @@ steps:
           ]
         }
         EOF
-        chmod -R a+rX "/publish/$DRONE_REPO_OWNER"
+        # s3fs はファイルごとに R2 へアップロードするため、並列にコピーする (失敗は個別に検出)
+        cp build/bootloader.bin "$DEST/" & P1=$!
+        cp build/partitions.bin "$DEST/" & P2=$!
+        cp build/firmware.bin "$DEST/" & P3=$!
+        cp "$MANIFEST" "$DEST/manifest.json" & P4=$!
+        COPY_STATUS=0
+        wait "$P1" || COPY_STATUS=1
+        wait "$P2" || COPY_STATUS=1
+        wait "$P3" || COPY_STATUS=1
+        wait "$P4" || COPY_STATUS=1
+        rm -f "$MANIFEST"
+        if [ "$COPY_STATUS" -ne 0 ]; then
+          echo "成果物の公開に失敗しました" >&2
+          exit "$COPY_STATUS"
+        fi
+        # chmod -R a+rX "/publish/$DRONE_REPO_OWNER"
         echo "公開先: https://users.j-code.org/${DEST#/publish/}/"
     when:
       event:
         - push
         - tag
 
-  # --- 3. タグPush時に Gitea へリリース作成 ＆ バイナリ添付 ---
+  # --- 3. タグPush時に Gitea へリリース作成 と バイナリ添付 ---
   - name: release-to-gitea
     image: plugins/gitea-release
     settings:
