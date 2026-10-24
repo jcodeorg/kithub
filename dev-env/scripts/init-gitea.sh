@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 新規構築用。Gitea を起動し、管理者アカウントと Drone 用 OAuth アプリを作成して、全サービスを起動する。
+# 新規構築用。Gitea を起動し、管理者アカウントを作成して、Actions runner を含む全サービスを起動する。
 # 引っ越しのときは使わない (restore.sh を使う)。bootstrap.sh の後、DNS が新サーバーを向いた状態で実行する。
 # 使い方: init-gitea.sh
 # 環境変数: GITEA_ADMIN_USER (既定 gitea-admin) / GITEA_ADMIN_EMAIL (既定 <ユーザー名>@<ドメイン>)
@@ -9,9 +9,9 @@ DEV_ENV_DIR="${DEV_ENV_DIR:-$HOME/dev-env}"
 ADMIN_USER="${GITEA_ADMIN_USER:-gitea-admin}"
 cd "$DEV_ENV_DIR"
 
-# docker-compose.yml の Drone のホスト名から、ドメインを求める
-DRONE_HOST="$(grep -oP 'DRONE_SERVER_HOST=\K\S+' docker-compose.yml)"
-DOMAIN="${DRONE_HOST#*.}"
+# docker-compose.yml の Gitea のドメインから、ドメインを求める
+GITEA_HOST="$(grep -oP 'GITEA__server__DOMAIN=\K\S+' docker-compose.yml)"
+DOMAIN="${GITEA_HOST#*.}"
 ADMIN_EMAIL="${GITEA_ADMIN_EMAIL:-$ADMIN_USER@$DOMAIN}"
 
 # 構築済みのデータを誤って壊さないよう、既存の環境では中止する
@@ -21,13 +21,11 @@ if [ -e .env ] || [ -n "$(sudo ls -A gitea 2>/dev/null)" ]; then
 fi
 
 # データ用ディレクトリを作る (Gitea コンテナは UID 1000 で動くため所有者を合わせる)
-mkdir -p gitea gitea-config
+mkdir -p gitea gitea-config act_runner/data
 sudo chown -R 1000:1000 gitea gitea-config
-# .env を作る。Drone と Gitea の連携情報は、OAuth アプリ作成後に書き込む
+# .env を作る。runner 登録トークンは Gitea 起動後に書き込む
 (umask 077; cat > .env <<EOF
-GITEA_CLIENT_ID=
-GITEA_CLIENT_SECRET=
-DRONE_RPC_SECRET=$(openssl rand -hex 16)
+GITEA_RUNNER_REGISTRATION_TOKEN=
 DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
 DEV_ENV_DIR=$DEV_ENV_DIR
 EOF
@@ -69,17 +67,11 @@ PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)"
 docker compose exec -T gitea gitea admin user create --admin \
   --username "$ADMIN_USER" --password "$PASS" --email "$ADMIN_EMAIL" --must-change-password=false
 
-# Drone 用の OAuth アプリを Gitea API で作る。公開ポートを使わず、Docker ネットワーク内から API を呼ぶ
-NET="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(docker compose ps -q gitea)")"
-RES="$(docker run --rm --network "$NET" curlimages/curl -fsS -u "$ADMIN_USER:$PASS" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\":\"Drone CI\",\"redirect_uris\":[\"https://$DRONE_HOST/login\"],\"confidential_client\":true}" \
-  http://gitea:3000/api/v1/user/applications/oauth2)"
-# 応答から client_id / client_secret を取り出し、.env に書き込む
-read -r CID CSECRET < <(echo "$RES" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["client_id"], d["client_secret"])')
-sed -i "s|^GITEA_CLIENT_ID=.*|GITEA_CLIENT_ID=$CID|; s|^GITEA_CLIENT_SECRET=.*|GITEA_CLIENT_SECRET=$CSECRET|" .env
+# act_runner の登録トークンを発行して .env に書き込む
+TOKEN="$(docker compose exec -T gitea gitea actions generate-runner-token | tr -d '\r\n')"
+sed -i "s|^GITEA_RUNNER_REGISTRATION_TOKEN=.*|GITEA_RUNNER_REGISTRATION_TOKEN=$TOKEN|" .env
 
-# 残りのサービス (Drone など) を .env の値で起動する
+# 残りのサービス (act_runner など) を .env の値で起動する
 docker compose up -d
 docker compose ps
 

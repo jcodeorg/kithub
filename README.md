@@ -35,14 +35,13 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 DNS で以下を設定する
 * `gitea.j-code.org`（Gitea リポジトリ管理）
 * `ide.j-code.org`（WebAssembly/クライアント動作型 Web IDE）
-* `drone.j-code.org`（Drone CI サーバー）
-* `users.j-code.org`（Drone CIで生成したビルド成果物の配信）
+* `users.j-code.org`（Gitea Actions で生成したビルド成果物の配信）
 
 ESP32のビルド成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチPush時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）から取得できます。
 
 4. Gitea を起動
 
-5. Drone を起動してリポジトリを有効化
+5. Actions runner（act_runner）を登録して起動
 
 6. VPS（Ubuntu）の IP フォワーディングを有効化する
 Docker コンテナからの通信を外のインターネットに転送するための設定を有効にします。
@@ -87,8 +86,8 @@ sudo systemctl restart docker
 設定が完了したら、もう一度同じコマンドを実行します。
 
 Bash
-docker exec -it dev-env-drone-runner-1 wget --spider --timeout=5 https://github.com
+docker exec -it dev-env-act_runner-1 wget --spider --timeout=5 https://github.com
 成功時の表示: Connecting to github.com ... connected. および 200 OK や 301 Moved Permanently などの応答が返ります。
 
-接続が確認できたら、Drone CI 画面から Re-run を実行してください。
+接続が確認できたら、Gitea の Actions 画面からワークフローを再実行してください。
 ===

@@ -3,4 +3,4 @@
 dev-env/gitea/
 dev-env/gitea-config/
 dev-env/cache/
-dev-env/drone/
+dev-env/act_runner/data/

@@ -65,9 +65,10 @@ findmnt -T "$PAGES" -o SOURCE,FSTYPE,TARGET
 findmnt -n -T "$PAGES" -o FSTYPE | grep -q 'fuse.s3fs'
 
 # 設定ファイルの配置。運用中のものを壊さないよう、無いときだけコピーする
-mkdir -p "$DEV_ENV_DIR/caddy" "$DEV_ENV_DIR/cache"
+mkdir -p "$DEV_ENV_DIR/caddy" "$DEV_ENV_DIR/act_runner/data"
 [ -e "$DEV_ENV_DIR/docker-compose.yml" ] || cp "$REPO_DEV_ENV/docker-compose.yml" "$DEV_ENV_DIR/"
 [ -e "$DEV_ENV_DIR/caddy/Caddyfile" ] || cp "$REPO_DEV_ENV/caddy/Caddyfile" "$DEV_ENV_DIR/caddy/"
+[ -e "$DEV_ENV_DIR/act_runner/config.yaml" ] || cp "$REPO_DEV_ENV/act_runner/config.yaml" "$DEV_ENV_DIR/act_runner/"
 [ -e "$PAGES/index.html" ] || cp "$REPO_DEV_ENV/pages/index.html" "$PAGES/"
 # スクリプト自体も運用ディレクトリにコピーする (cron やバックアップから使うため)
 if [ "$REPO_DEV_ENV" != "$DEV_ENV_DIR" ]; then

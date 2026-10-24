@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# R2 のバックアップから Gitea / Drone / 設定一式を復元して起動する。bootstrap.sh の後に実行する。
+# R2 のバックアップから Gitea / 設定一式を復元して起動する。bootstrap.sh の後に実行する。
 # 使い方: restore.sh [--force] [バックアップ名]
-#   --force      : 既存の Gitea / Drone のデータを削除してやり直す (リハーサル後の本番用)
+#   --force      : 既存の Gitea のデータを削除してやり直す (リハーサル後の本番用)
 #   バックアップ名: 省略すると latest
-# drone-runner は、DNS 切り替え前に旧サーバーのジョブを奪わないよう、ここでは起動しない。
+# act_runner は、DNS 切り替え前に旧サーバーのジョブを奪わないよう、ここでは起動しない (go-live.sh が起動する)。
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 require_docker
@@ -32,7 +32,7 @@ if [ -d gitea ] && [ -n "$(sudo ls -A gitea)" ]; then
     exit 1
   fi
   if [ -f docker-compose.yml ]; then docker compose down -v; fi
-  sudo rm -rf gitea gitea-config drone postgres_data
+  sudo rm -rf gitea gitea-config act_runner/data postgres_data
 fi
 
 # ファイル一式を展開する
@@ -50,13 +50,17 @@ fi
 
 # 復元元と UID / パスが違っても動くように所有者と .env を整える
 sudo chown -R 1000:1000 gitea gitea-config
-for p in docker-compose.yml .env caddy ide flash; do
+for p in docker-compose.yml .env caddy ide flash act_runner; do
   if [ -e "$p" ]; then sudo chown -R "$(id -u):$(id -g)" "$p"; fi
 done
 chmod 600 .env
 sed -i '/^DEV_ENV_DIR=/d' .env
 echo "DEV_ENV_DIR=$DEV_ENV_DIR" >> .env
-mkdir -p cache
+# runner の設定はリポジトリの最新版を使う。登録情報は復元せず、go-live.sh で登録し直す
+mkdir -p act_runner/data
+if [ "$REPO_DEV_ENV" != "$DEV_ENV_DIR" ] && [ -f "$REPO_DEV_ENV/act_runner/config.yaml" ]; then
+  cp "$REPO_DEV_ENV/act_runner/config.yaml" act_runner/config.yaml
+fi
 
 # DB だけ起動し、接続できるまで待ってからダンプを復元する
 docker compose up -d db
@@ -71,15 +75,15 @@ if [ -n "$CADDY_VOL" ] && rclone lsf "$SRC/caddy_data.tgz" >/dev/null 2>&1; then
   rclone cat "$SRC/caddy_data.tgz" | docker run --rm -i -v "$CADDY_VOL:/data" alpine tar -xzf - -C /data
 fi
 
-# drone-runner 以外を起動し、Gitea が応答して管理者が見えることを確認する (最大5分)
-docker compose up -d gitea drone caddy
+# act_runner 以外を起動し、Gitea が応答して管理者が見えることを確認する (最大5分)
+docker compose up -d gitea caddy
 
 echo "Gitea の起動を待っています"
 for _ in $(seq 1 60); do
   if docker compose exec -T gitea wget -qO- http://localhost:3000/api/healthz >/dev/null 2>&1; then
     echo "Gitea 起動 OK"
     docker compose exec -T gitea gitea admin user list --admin
-    echo "復元完了。DNS 切り替えまで drone-runner は起動していません"
+    echo "復元完了。DNS 切り替えまで act_runner は起動していません"
     exit 0
   fi
   sleep 5

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Gitea / Drone / 設定一式を R2 のバックアップ用バケットへ保存する (VPS のディスクは使わない)。
+# Gitea / 設定一式を R2 のバックアップ用バケットへ保存する (VPS のディスクは使わない)。
+# runner の登録情報 (act_runner/data) は保存しない。復元後に go-live.sh が新しいトークンで登録し直す。
 # 使い方: backup.sh [--final]
 #   --final : 引っ越し用。完了後も、このサーバーのサービスを停止したままにする
 set -euo pipefail
@@ -17,17 +18,17 @@ DEST="$BUCKET/$TS"
 
 # 失敗したときは、通常・--final のどちらでもサービスを再開する。--final は成功したときだけ停止したままにする
 DONE=false
-trap '{ $DONE && $FINAL; } || docker compose start gitea drone drone-runner >/dev/null' EXIT
+trap '{ $DONE && $FINAL; } || docker compose start gitea act_runner >/dev/null' EXIT
 
 # 整合性のため、書き込みを行うサービスを止めてから保存する (DB は起動したまま)
-docker compose stop gitea drone drone-runner
+docker compose stop act_runner gitea
 
 # 1) DB のダンプを、ディスクに書かず直接 R2 へ送る
 docker compose exec -T db pg_dump -U gitea -Fc gitea | rclone rcat "$DEST/gitea.pgdump"
 
 # 2) リポジトリ・設定・秘密情報 (.env) のファイル一式を tar にして R2 へ送る (存在するものだけ)
 PATHS=()
-for p in gitea gitea-config drone ide flash caddy .env docker-compose.yml; do
+for p in gitea gitea-config ide flash caddy act_runner/config.yaml .env docker-compose.yml; do
   if [ -e "$p" ]; then PATHS+=("$p"); fi
 done
 sudo tar -czf - "${PATHS[@]}" | rclone rcat "$DEST/files.tgz"

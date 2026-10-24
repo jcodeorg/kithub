@@ -3,12 +3,7 @@ gitea.j-code.org {
     reverse_proxy gitea:3000
 }
 
-# Drone CI (自動ビルド)
-drone.j-code.org {
-    reverse_proxy drone:80
-}
-
-# CI成果物の静的配信
+# Gitea Actions の成果物の静的配信
 users.j-code.org {
     root * /srv/pages
     file_server
