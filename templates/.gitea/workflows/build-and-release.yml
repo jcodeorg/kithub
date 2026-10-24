@@ -11,6 +11,10 @@ on:
     tags:
       - "**"
 
+# リリース作成と添付ファイルのアップロードに書き込み権限が必要です。
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     # このジョブ全体を Linux 環境で実行します。
@@ -196,13 +200,13 @@ jobs:
       - name: Create Gitea release and upload firmware
         if: startsWith(github.ref, 'refs/tags/')
         env:
-          # リリース作成 API の認証トークン。Actions secrets から読み込みます。
-          GITEA_TOKEN: ${{ secrets.gitea_token }}
+          # リリース作成 API の認証トークン。ジョブごとに自動発行される GITHUB_TOKEN を使います。
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # トークンがない場合は、失敗を明示して終了します。
           if [ -z "$GITEA_TOKEN" ]; then
-            echo "Gitea Actions secret 'gitea_token' is not configured" >&2
+            echo "GITHUB_TOKEN is not available" >&2
             exit 1
           fi
           # Gitea API にタグ名を送ってリリースを作成し、応答からリリース ID を取り出します。
