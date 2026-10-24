@@ -9,10 +9,10 @@ ENV ARDUINO_DIRECTORIES_DATA=/opt/arduino/data \
     ARDUINO_BOARD_MANAGER_ADDITIONAL_URLS=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json \
     ARDUINO_UPDATER_ENABLE_NOTIFICATION=false
 
-# arduino-cli、ESP32 ツールが使う pyserial、R2 への公開に使う boto3
+# arduino-cli と、ESP32 ツールが使う pyserial
 RUN curl -fsSL https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz \
       | tar -xz -C /usr/local/bin arduino-cli \
- && python3 -m pip install --no-cache-dir pyserial boto3
+ && python3 -m pip install --no-cache-dir pyserial
 
 # ESP32 ボードコアとライブラリ
 RUN arduino-cli core update-index \

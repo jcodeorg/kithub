@@ -25,9 +25,12 @@ jobs:
     # このジョブ全体を Linux 環境で実行します。
     runs-on: ubuntu-latest
     container:
-      # Arduino CLI・ESP32 コア・ライブラリ・boto3 を焼き込んだ専用イメージです (dev-env/scripts/build-image.sh で作成)。
+      # Arduino CLI・ESP32 コア・ライブラリを焼き込んだ専用イメージです (dev-env/scripts/build-image.sh で作成)。
       # Node.js も含むため actions/checkout が動きます。
       image: kithub/esp32-arduino:latest
+      # ホストの s3fs マウント (R2 の gitea-pages バケット) を /publish に接続します。
+      volumes:
+        - /var/lib/kithub/pages:/publish
 
     steps:
       # リポジトリのソースコードをジョブ内に取得します。
@@ -64,23 +67,15 @@ jobs:
             mv build/firmware.ino.bin build/firmware.bin
           fi
 
-      # ビルドしたファームウェアを Cloudflare R2 にアップロードします。
+      # ホストの s3fs マウント (R2) に直接書き込んで公開します。R2 の認証情報はジョブに渡しません。
       - name: Publish firmware to users.j-code.org
-        env:
-          # 認証情報はリポジトリの Actions secrets に保存し、ソースコードには書きません。
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          # 必要な Secret が未登録なら、誤った設定のまま公開せずに終了します。
-          for name in R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
-            if [ -z "${!name}" ]; then
-              echo "Gitea Actions secret '$name' is not configured" >&2
-              exit 1
-            fi
-          done
+          # R2 に接続されたマウントでない場合は、コンテナ内のディスクに書いてしまうため中止します。
+          if ! grep -qE ' /publish .* - fuse\.s3fs ' /proc/self/mountinfo; then
+            echo "/publish が R2 (s3fs) にマウントされていません" >&2
+            exit 1
+          fi
 
           # タグ push はタグ名のフォルダー、それ以外の push は最新の latest/ に公開します。
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -88,42 +83,26 @@ jobs:
           else
             VERSION=latest
           fi
-          export VERSION
-          # Python で R2 に接続し、成果物と書き込み用 manifest.json を作成・アップロードします (boto3 はイメージに導入済み)。
-          python3 - <<'PY'
-          import json
-          import os
+          # 公開先は <owner>/<repository>/<version>/ だけに限定します。
+          case "$VERSION" in *..*) echo "不正なバージョン名です" >&2; exit 1 ;; esac
+          DEST="/publish/$GITHUB_REPOSITORY/$VERSION"
+          mkdir -p "$DEST"
 
-          import boto3
-
-          version = os.environ["VERSION"]
-          repository = os.environ["GITHUB_REPOSITORY"]
-          bucket = os.environ["R2_BUCKET"]
-          # 公開キーを <owner>/<repository>/<version>/ の形にそろえます。
-          prefix = f"{repository}/{version}"
-
-          # Cloudflare の S3 互換エンドポイントに接続します。
-          client = boto3.client(
-              "s3",
-              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-              region_name="auto",
-          )
-
-          # manifest.json が参照する3つのバイナリを先にアップロードします。
-          for filename in ("bootloader.bin", "partitions.bin", "firmware.bin"):
-              client.upload_file(
-                  f"build/{filename}",
-                  bucket,
-                  f"{prefix}/{filename}",
-                  ExtraArgs={"ContentType": "application/octet-stream"},
-              )
+          # manifest.json が参照する3つのバイナリを並列に書き込みます。
+          START=$(date +%s.%N)
+          printf '%s\n' bootloader.bin partitions.bin firmware.bin \
+            | xargs -P 3 -I{} cp "build/{}" "$DEST/{}"
 
           # Web フラッシュツールに、チップ種類と各バイナリの書き込み位置を伝える定義です。
+          # バイナリの書き込み完了後に manifest を最後に配置します。
+          VERSION="$VERSION" python3 - "$DEST/manifest.json" <<'PY'
+          import json
+          import os
+          import sys
+
           manifest = {
               "name": "firmware",
-              "version": version,
+              "version": os.environ["VERSION"],
               "new_install_prompt_erase": True,
               "builds": [
                   {
@@ -136,15 +115,11 @@ jobs:
                   }
               ],
           }
-          # バイナリのアップロード完了後に manifest を最後に配置します。
-          client.put_object(
-              Bucket=bucket,
-              Key=f"{prefix}/manifest.json",
-              Body=json.dumps(manifest).encode(),
-              ContentType="application/json",
-          )
-          print(f"公開先: https://users.j-code.org/{prefix}/")
+          with open(sys.argv[1], "w") as f:
+              json.dump(manifest, f)
           PY
+          sync "$DEST"/*
+          echo "公開先: https://users.j-code.org/$GITHUB_REPOSITORY/$VERSION/ ($(python3 -c "import sys; print(f'{float(sys.argv[2])-float(sys.argv[1]):.2f}')" "$START" "$(date +%s.%N)") 秒)"
 
       # タグの push の場合だけ Gitea リリースを作り、ビルドしたバイナリを添付します。
       - name: Create Gitea release and upload firmware
@@ -159,21 +134,36 @@ jobs:
             echo "GITHUB_TOKEN is not available" >&2
             exit 1
           fi
-          # Gitea API にタグ名を送ってリリースを作成し、応答からリリース ID を取り出します。
           API_URL=https://gitea.j-code.org/api/v1
-          RELEASE_PAYLOAD=$(python -c 'import json, os; tag = os.environ["GITHUB_REF_NAME"]; print(json.dumps({"tag_name": tag, "name": tag, "body": ""}))')
-          RELEASE=$(curl --fail-with-body --silent --show-error \
-            -X POST "$API_URL/repos/$GITHUB_REPOSITORY/releases" \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$RELEASE_PAYLOAD")
-          RELEASE_ID=$(printf '%s' "$RELEASE" | python -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+          AUTH="Authorization: token $GITEA_TOKEN"
+          RELEASE_URL="$API_URL/repos/$GITHUB_REPOSITORY/releases"
+
+          # 同じタグのリリースがすでにある場合 (再実行や手動作成) は、新規作成せず再利用します。
+          STATUS=$(curl --silent --output release.json --write-out '%{http_code}' \
+            "$RELEASE_URL/tags/$GITHUB_REF_NAME" -H "$AUTH")
+          if [ "$STATUS" = 404 ]; then
+            RELEASE_PAYLOAD=$(python3 -c 'import json, os; tag = os.environ["GITHUB_REF_NAME"]; print(json.dumps({"tag_name": tag, "name": tag, "body": ""}))')
+            curl --fail-with-body --silent --show-error -o release.json \
+              -X POST "$RELEASE_URL" \
+              -H "$AUTH" -H "Content-Type: application/json" \
+              --data "$RELEASE_PAYLOAD"
+          elif [ "$STATUS" != 200 ]; then
+            echo "リリースの取得に失敗しました (HTTP $STATUS)" >&2
+            cat release.json >&2
+            exit 1
+          fi
+          RELEASE_ID=$(python3 -c 'import json; print(json.load(open("release.json"))["id"])')
 
           # 3つのファームウェアバイナリをリリースの添付ファイルとしてアップロードします。
+          # 同名の添付が残っていると失敗するため、先に削除します。
           for file in build/bootloader.bin build/partitions.bin build/firmware.bin; do
             ASSET_NAME=$(basename "$file")
             export ASSET_NAME
-            ENCODED_NAME=$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["ASSET_NAME"]))')
+            ENCODED_NAME=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["ASSET_NAME"]))')
+            for old_id in $(python3 -c 'import json, os; [print(a["id"]) for a in json.load(open("release.json")).get("assets", []) if a["name"] == os.environ["ASSET_NAME"]]'); do
+              curl --fail-with-body --silent --show-error \
+                -X DELETE "$RELEASE_URL/$RELEASE_ID/assets/$old_id" -H "$AUTH"
+            done
             curl --fail-with-body --silent --show-error \
               -X POST "$API_URL/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$ENCODED_NAME" \
               -H "Authorization: token $GITEA_TOKEN" \

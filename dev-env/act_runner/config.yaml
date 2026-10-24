@@ -9,6 +9,9 @@ runner:
     - "ubuntu-latest:docker://node:20-bookworm"
 
 container:
+  # 公開成果物 (R2 の s3fs マウント) をジョブに渡すため、このパスの bind mount だけ許可する
+  valid_volumes:
+    - /var/lib/kithub/pages
   # ジョブコンテナを dev-net に参加させ、http://gitea:3000 を名前解決できるようにする
   network: "dev-net"
   options: ""

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # backup.sh / restore.sh / bootstrap.sh 共通の設定。直接は実行しない。
 DEV_ENV_DIR="${DEV_ENV_DIR:-$HOME/dev-env}"
+# 公開成果物 (R2 の s3fs マウント先) と s3fs のローカルキャッシュ。Caddy と Actions のジョブが共有する
+PAGES_DIR="${PAGES_DIR:-/var/lib/kithub/pages}"
+S3FS_CACHE_DIR="${S3FS_CACHE_DIR:-/var/cache/kithub/s3fs}"
 
 if [ ! -f "$DEV_ENV_DIR/.r2.env" ]; then
   echo "$DEV_ENV_DIR/.r2.env がありません。doc/install.md の手順で作成してください" >&2

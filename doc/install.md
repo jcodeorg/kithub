@@ -21,7 +21,7 @@
 * **VPS:** XServer VPS（4コア / 4GB RAM 以上、Ubuntu 26.04 LTS
 * **ユーザー名:** OS の一般ユーザーは `kithub`、Gitea の管理者アカウントは `gitea-admin`
 * **ドメイン（A レコードを VPS の IP に向ける）:** `gitea.j-code.org`（Gitea と Actions）/ `users.j-code.org`（CI成果物の配信）。
-* **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントします。R2 がデータの保存先ですが、s3fs のローカルキャッシュ（`~/dev-env/s3fs-cache`）に VPS のディスクを使います。空き容量を 1 GiB 確保する設定です。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
+* **構成:** 公開成果物（`pages`）は Cloudflare R2 を s3fs でマウントします（マウント先は `/var/lib/kithub/pages`、Actions のジョブにもここを渡します）。R2 がデータの保存先ですが、s3fs のローカルキャッシュ（`/var/cache/kithub/s3fs`）に VPS のディスクを使います。空き容量を 1 GiB 確保する設定です。Gitea の添付ファイル・アバター・LFS などは `gitea-storage` バケットに保存します。リポジトリ本体・DB は VPS に置き、`backup.sh` で R2（`gitea-backup`）に保存します。
 
 ---
 
@@ -32,7 +32,7 @@
 
      | バケット | 用途 |
      |---|---|
-     | `gitea-pages` | 公開成果物（users.j-code.org）。s3fs で `~/dev-env/pages` にマウント |
+     | `gitea-pages` | 公開成果物（users.j-code.org）。s3fs で `/var/lib/kithub/pages` にマウント |
      | `gitea-backup` | `backup.sh` の保存先 |
      | `gitea-storage` | Gitea の添付ファイル・アバター・LFS などの保存先（Gitea の `[storage]`、MinIO 互換。リポジトリ本体と DB は VPS に置く） |
 
@@ -84,7 +84,7 @@ chmod 600 ~/dev-env/.r2.env
 bash ~/kithub-repo/dev-env/scripts/bootstrap.sh --harden-ssh
 ```
 
-`bootstrap.sh` は何度実行しても安全です。OS のパッケージも最新に更新します。s3fs のデータキャッシュは `~/dev-env/s3fs-cache` に置かれ、キャッシュ利用時もディスクの空き容量を 1 GiB 以上残します。キャッシュは R2 へのアップロードをなくすものではないため、書き込み完了時の転送時間は残ります。終了時に「再起動してください」と表示されたら、`sudo reboot` で再起動し、再ログインしてから次へ進みます（R2 のマウントと Docker は自動で復帰します）。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
+`bootstrap.sh` は何度実行しても安全です。OS のパッケージも最新に更新します。s3fs のデータキャッシュは `/var/cache/kithub/s3fs` に置かれ、キャッシュ利用時もディスクの空き容量を 1 GiB 以上残します。キャッシュは R2 へのアップロードをなくすものではないため、書き込み完了時の転送時間は残ります。終了時に「再起動してください」と表示されたら、`sudo reboot` で再起動し、再ログインしてから次へ進みます（R2 のマウントと Docker は自動で復帰します）。R2 が `fuse.s3fs` としてマウントできないときは、エラーで止まります（マウントできない状態では Docker を起動させない設定も入ります）。
 
 3. **次へ進む:** 新規構築なら「4」、引っ越しなら「5」へ。
 
@@ -212,7 +212,7 @@ DNS を旧サーバーの IP に戻し、旧サーバーで `cd ~/dev-env && doc
 ### 6-2. 生徒向けの設定
 
 * ビルドは専用イメージ `kithub/esp32-arduino:latest`（Arduino CLI・ESP32 コア・ライブラリ入り）で動きます。サーバーで一度 `bash ~/dev-env/scripts/build-image.sh` を実行してビルドしてください（ボードコアやライブラリを更新するときも再実行します。引っ越し後の新サーバーでも必要です）。
-* 生徒が使うワークフローは [templates/.gitea/workflows/build-and-release.yml](../templates/.gitea/workflows/build-and-release.yml) を、リポジトリの `.gitea/workflows/` にコピーします（変更不要）。ビルドキャッシュはイメージに焼き込んだ読み取り専用のベースを、ジョブごとにコピーして使います（同時ビルドでも競合しません）。R2 への公開には、リポジトリまたは組織の Actions シークレットに `R2_ACCOUNT_ID`・`R2_BUCKET`・`R2_ACCESS_KEY_ID`・`R2_SECRET_ACCESS_KEY` を登録します（リリース作成には自動発行の `GITHUB_TOKEN` を使うため、追加のトークンは不要です）。
+* 生徒が使うワークフローは [templates/.gitea/workflows/build-and-release.yml](../templates/.gitea/workflows/build-and-release.yml) を、リポジトリの `.gitea/workflows/` にコピーします（変更不要）。ビルドキャッシュはイメージに焼き込んだ読み取り専用のベースを、ジョブごとにコピーして使います（同時ビルドでも競合しません）。R2 への公開は、ジョブがホストの s3fs マウント（`/publish`）へ直接書き込む方式のため、Actions シークレットに R2 の認証情報は不要です（リリース作成には自動発行の `GITHUB_TOKEN` を使うため、追加のトークンも不要です）。**注意:** マウントはバケット全体に書き込めるため、ワークフローを書き換えられる利用者は、他のリポジトリの成果物も上書き・削除できます。信頼できる利用者に限って運用してください。
 * CI成果物は `https://users.j-code.org/<オーナー名>/<リポジトリ名>/latest/`（ブランチ push 時）または `https://users.j-code.org/<オーナー名>/<リポジトリ名>/<タグ>/`（タグ時）で配信されます。
 * R2 はオブジェクトストレージで、ローカルファイルシステムと同じ原子性・遅延特性ではありません。s3fs のアップロード中の一時ファイル、ビルドキャッシュ、Docker イメージやログは VPS の容量を使います。定期的に VPS の空き容量と R2 の利用状況を確認してください。
 

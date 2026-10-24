@@ -20,7 +20,7 @@ echo "復元するバックアップ: $TS"
 cd "$DEV_ENV_DIR"
 
 # pages が R2 でないと、ローカルディスクに成果物が溜まるため中止する
-if ! findmnt -n -T "$DEV_ENV_DIR/pages" -o FSTYPE | grep -q 'fuse.s3fs'; then
+if ! findmnt -n -T "$PAGES_DIR" -o FSTYPE | grep -q 'fuse.s3fs'; then
   echo "pages が R2 にマウントされていません。先に bootstrap.sh を実行してください" >&2
   exit 1
 fi
