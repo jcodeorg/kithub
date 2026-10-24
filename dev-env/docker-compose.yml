@@ -53,6 +53,9 @@ services:
       - GITEA__server__START_SSH_SERVER=false
       # 初期設定画面を省略する (管理者は scripts/init-gitea.sh が作成する)
       - GITEA__security__INSTALL_LOCK=true
+      # Gitea Actions (.gitea/workflows) を有効にする
+      - GITEA__actions__ENABLED=true
+      - GITEA__actions__DEFAULT_ACTIONS_URL=https://github.com
       # PostgreSQL接続設定（環境変数による初期化・指定）
       - GITEA__database__DB_TYPE=postgres
       - GITEA__database__HOST=db:5432
@@ -98,6 +101,26 @@ services:
       - DRONE_RUNNER_VOLUMES=${DEV_ENV_DIR:?.env に DEV_ENV_DIR を設定してください}/pages:/publish,${DEV_ENV_DIR}/cache:/ci-cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - dev-net
+
+  # --- Gitea Actions Runner (act_runner) ---
+  # .env に GITEA_RUNNER_REGISTRATION_TOKEN が必要:
+  #   docker compose exec gitea gitea actions generate-runner-token
+  act_runner:
+    image: gitea/act_runner:0.2.11
+    restart: always
+    environment:
+      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_RUNNER_REGISTRATION_TOKEN=${GITEA_RUNNER_REGISTRATION_TOKEN:-}
+      - GITEA_RUNNER_NAME=vps-act-runner
+      - CONFIG_FILE=/config.yaml
+    volumes:
+      - ./act_runner/config.yaml:/config.yaml:ro
+      - ./act_runner/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - gitea
     networks:
       - dev-net
 

@@ -1,0 +1,228 @@
+# ワークフローの名前。Gitea の Actions 画面に表示されます。
+name: Build and Release ESP32 Firmware
+
+# main / master への push とタグの push で実行します。
+# pull_request は設定していないため、PR 作成・更新では実行されません。
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "**"
+
+jobs:
+  build-and-release:
+    # このジョブ全体を Linux 環境で実行します。
+    runs-on: ubuntu-latest
+    container:
+      # Python は、R2 アップロード処理で使う boto3 を実行するために使います。
+      image: python:3.11
+      # Docker の名前付きボリュームを /ci-cache に接続します。
+      # 同じ Docker デーモンを使うジョブ同士で、Arduino のツールやライブラリを共有できます。
+      volumes:
+        - arduino-esp32-build-cache:/ci-cache
+
+    steps:
+      # リポジトリのソースコードをジョブ内に取得します。
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Arduino CLI、ESP32 コア、ライブラリを用意してスケッチをコンパイルします。
+      - name: Build firmware
+        run: |
+          # どのコマンドが失敗しても、後続の処理を続けずにジョブを失敗させます。
+          set -euo pipefail
+          # 共有ボリュームをキャッシュのルートとして使います。
+          CACHE_ROOT=/ci-cache
+          mkdir -p "$CACHE_ROOT/bin" "$CACHE_ROOT/data" "$CACHE_ROOT/user/libraries" "$CACHE_ROOT/pylib"
+          # キャッシュ内の Arduino CLI を優先して実行し、pyserial も Python から見つけられるようにします。
+          export PATH="$CACHE_ROOT/bin:$PATH"
+          export PYTHONPATH="$CACHE_ROOT/pylib${PYTHONPATH:+:$PYTHONPATH}"
+
+          # 共有キャッシュを同時に変更すると破損する可能性があるため、
+          # ツールやライブラリの確認・導入中は全ジョブでロックを共有します。
+          exec 9>"$CACHE_ROOT/.build.lock"
+          echo "共有 Arduino キャッシュのロックを取得します (最大30分)"
+          flock -w 1800 9
+
+          # Arduino CLI は共有キャッシュにまだない場合だけダウンロードします。
+          if [ ! -x "$CACHE_ROOT/bin/arduino-cli" ]; then
+            curl -fsSL --ipv4 --connect-timeout 20 --retry 5 --retry-delay 5 --retry-all-errors https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz | tar -xz -C "$CACHE_ROOT/bin" arduino-cli
+          fi
+          arduino-cli version
+
+          # ESP32 の書き込みツールが使う pyserial を共有キャッシュに用意します。
+          if [ ! -d "$CACHE_ROOT/pylib/serial" ]; then
+            python3 -m pip install --no-cache-dir --disable-pip-version-check --target "$CACHE_ROOT/pylib" pyserial
+          fi
+
+          # Arduino CLI のボード情報・ユーザーライブラリを共有キャッシュに向けます。
+          arduino-cli config init --overwrite
+          arduino-cli config set directories.data "$CACHE_ROOT/data"
+          arduino-cli config set directories.user "$CACHE_ROOT/user"
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          # 指定したバージョンの ESP32 ボードコアがなければインストールします。
+          if [ ! -d "$CACHE_ROOT/data/packages/esp32/hardware/esp32/2.0.14" ]; then
+            arduino-cli core update-index
+            arduino-cli core install esp32:esp32@2.0.14
+          fi
+
+          # ESP32-A2DP ライブラリは Git から取得し、キャッシュがあれば最新にします。
+          # 想定外の中身が同じ場所にある場合は、誤って上書きせずエラーにします。
+          if [ -d "$CACHE_ROOT/user/libraries/ESP32-A2DP/.git" ]; then
+            git -C "$CACHE_ROOT/user/libraries/ESP32-A2DP" pull --ff-only
+          elif [ -e "$CACHE_ROOT/user/libraries/ESP32-A2DP" ]; then
+            echo "Cached ESP32-A2DP directory is not a Git repository" >&2
+            exit 1
+          else
+            git clone --depth 1 https://github.com/pschatzmann/ESP32-A2DP.git "$CACHE_ROOT/user/libraries/ESP32-A2DP"
+          fi
+          # スケッチが使う Arduino ライブラリをインストールします。
+          arduino-cli lib install "U8g2"
+          arduino-cli lib install "Adafruit AHTX0"
+          arduino-cli lib install "BH1750"
+          arduino-cli lib install "Adafruit NeoPixel"
+
+          # 共有ツールの準備が終わったのでロックを解放します。
+          # コンパイルを待つ他のジョブが、共有ライブラリを準備できるようにします。
+          flock -u 9
+
+          # コンパイルの一時キャッシュはジョブごとに分離します。
+          # 共有すると同時ビルドが同じファイルを書き換えるためです。
+          arduino-cli config set build_cache.path "$GITHUB_WORKSPACE/.arduino-build-cache"
+          # 対象ボードの設定を指定してファームウェアをビルドします。
+          arduino-cli compile \
+            --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
+            --output-dir build \
+            firmware/firmware.ino
+
+          # 出力された長いファイル名を、書き込みや配布で使う名前にそろえます。
+          if [ -f build/firmware.ino.bootloader.bin ]; then
+            mv build/firmware.ino.bootloader.bin build/bootloader.bin
+          fi
+          if [ -f build/firmware.ino.partitions.bin ]; then
+            mv build/firmware.ino.partitions.bin build/partitions.bin
+          fi
+          if [ -f build/firmware.ino.bin ]; then
+            mv build/firmware.ino.bin build/firmware.bin
+          fi
+
+      # ビルドしたファームウェアを Cloudflare R2 にアップロードします。
+      - name: Publish firmware to users.j-code.org
+        env:
+          # 認証情報はリポジトリの Actions secrets に保存し、ソースコードには書きません。
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # 必要な Secret が未登録なら、誤った設定のまま公開せずに終了します。
+          for name in R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Gitea Actions secret '$name' is not configured" >&2
+              exit 1
+            fi
+          done
+
+          # タグ push はタグ名のフォルダー、それ以外の push は最新の latest/ に公開します。
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="$GITHUB_REF_NAME"
+          else
+            VERSION=latest
+          fi
+          export VERSION
+          # boto3 は Python から S3 互換の R2 API を呼び出すためのライブラリです。
+          python3 -m pip install --disable-pip-version-check --target "$RUNNER_TEMP/r2-python" boto3
+          # Python で R2 に接続し、成果物と書き込み用 manifest.json を作成・アップロードします。
+          PYTHONPATH="$RUNNER_TEMP/r2-python${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+          import json
+          import os
+
+          import boto3
+
+          version = os.environ["VERSION"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          bucket = os.environ["R2_BUCKET"]
+          # 公開キーを <owner>/<repository>/<version>/ の形にそろえます。
+          prefix = f"{repository}/{version}"
+
+          # Cloudflare の S3 互換エンドポイントに接続します。
+          client = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+          )
+
+          # manifest.json が参照する3つのバイナリを先にアップロードします。
+          for filename in ("bootloader.bin", "partitions.bin", "firmware.bin"):
+              client.upload_file(
+                  f"build/{filename}",
+                  bucket,
+                  f"{prefix}/{filename}",
+                  ExtraArgs={"ContentType": "application/octet-stream"},
+              )
+
+          # Web フラッシュツールに、チップ種類と各バイナリの書き込み位置を伝える定義です。
+          manifest = {
+              "name": "firmware",
+              "version": version,
+              "new_install_prompt_erase": True,
+              "builds": [
+                  {
+                      "chipFamily": "ESP32",
+                      "parts": [
+                          {"path": "bootloader.bin", "offset": 0x1000},
+                          {"path": "partitions.bin", "offset": 0x8000},
+                          {"path": "firmware.bin", "offset": 0x10000},
+                      ],
+                  }
+              ],
+          }
+          # バイナリのアップロード完了後に manifest を最後に配置します。
+          client.put_object(
+              Bucket=bucket,
+              Key=f"{prefix}/manifest.json",
+              Body=json.dumps(manifest).encode(),
+              ContentType="application/json",
+          )
+          print(f"公開先: https://users.j-code.org/{prefix}/")
+          PY
+
+      # タグの push の場合だけ Gitea リリースを作り、ビルドしたバイナリを添付します。
+      - name: Create Gitea release and upload firmware
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          # リリース作成 API の認証トークン。Actions secrets から読み込みます。
+          GITEA_TOKEN: ${{ secrets.gitea_token }}
+        run: |
+          set -euo pipefail
+          # トークンがない場合は、失敗を明示して終了します。
+          if [ -z "$GITEA_TOKEN" ]; then
+            echo "Gitea Actions secret 'gitea_token' is not configured" >&2
+            exit 1
+          fi
+          # Gitea API にタグ名を送ってリリースを作成し、応答からリリース ID を取り出します。
+          API_URL=https://gitea.j-code.org/api/v1
+          RELEASE_PAYLOAD=$(python -c 'import json, os; tag = os.environ["GITHUB_REF_NAME"]; print(json.dumps({"tag_name": tag, "name": tag, "body": ""}))')
+          RELEASE=$(curl --fail-with-body --silent --show-error \
+            -X POST "$API_URL/repos/$GITHUB_REPOSITORY/releases" \
+            -H "Authorization: token $GITEA_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$RELEASE_PAYLOAD")
+          RELEASE_ID=$(printf '%s' "$RELEASE" | python -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+
+          # 3つのファームウェアバイナリをリリースの添付ファイルとしてアップロードします。
+          for file in build/bootloader.bin build/partitions.bin build/firmware.bin; do
+            ASSET_NAME=$(basename "$file")
+            export ASSET_NAME
+            ENCODED_NAME=$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["ASSET_NAME"]))')
+            curl --fail-with-body --silent --show-error \
+              -X POST "$API_URL/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$ENCODED_NAME" \
+              -H "Authorization: token $GITEA_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$file"
+          done
