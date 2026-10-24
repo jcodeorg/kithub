@@ -15,6 +15,11 @@ on:
 permissions:
   contents: write
 
+# pipefail や [[ ]] を使うため、run のシェルを bash にします。
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-and-release:
     # このジョブ全体を Linux 環境で実行します。
