@@ -1,5 +1,7 @@
 networks:
   dev-net:
+    # act_runner のジョブコンテナを同じネットワークに参加させるため、名前を固定する
+    name: dev-net
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: "1400"

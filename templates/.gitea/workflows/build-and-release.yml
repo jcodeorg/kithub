@@ -20,8 +20,9 @@ jobs:
     # このジョブ全体を Linux 環境で実行します。
     runs-on: ubuntu-latest
     container:
-      # Python は、R2 アップロード処理で使う boto3 を実行するために使います。
-      image: python:3.11
+      # actions/checkout などの Actions は Node.js で動くため、Node.js を含むイメージが必要です。
+      # このイメージは Node.js・Git・curl・Python・pip も含み、本ワークフローの各処理に対応します。
+      image: catthehacker/ubuntu:act-22.04
       # Docker の名前付きボリュームを /ci-cache に接続します。
       # 同じ Docker デーモンを使うジョブ同士で、Arduino のツールやライブラリを共有できます。
       volumes:
