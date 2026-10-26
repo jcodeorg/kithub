@@ -45,86 +45,33 @@ jobs:
         run: |
           set -euo pipefail
           FQBN="esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M"
-          CACHE=/cache/arduino
-          mkdir -p "$CACHE" build
-
-          # キャッシュのキー。ENV_KEY はボード設定・コア・ライブラリの版、SRC_KEY はスケッチの内容です。
-          ENV_KEY=$({ echo "$FQBN"; arduino-cli version; arduino-cli core list; arduino-cli lib list; } | sha256sum | cut -d' ' -f1)
-          SRC_KEY=$(find firmware -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-          BASE="$CACHE/base-$ENV_KEY"          # コアとライブラリのコンパイル結果 (全員で共有)
-          OUT="$CACHE/out-$ENV_KEY-$SRC_KEY"   # 同一スケッチの完成済みバイナリ
-
+          # /cache がホストに接続されていないと、キャッシュがジョブ終了時に消えるため中止します。
+          if ! grep -q ' /cache ' /proc/self/mountinfo; then
+            echo "/cache がマウントされていません。act_runner の valid_volumes に /var/lib/kithub/build-cache を許可してください" >&2
+            exit 1
+          fi
+          ENV_KEY=$({ printf '%s\n' "$FQBN"; arduino-cli version; arduino-cli core list; arduino-cli lib list; } | sha256sum | cut -c1-16)
+          CACHE="/cache/arduino-$ENV_KEY"
+          BUILD_DIR="$CACHE/build"
+          # Arduino CLI はフォルダー名とメインファイル名 (firmware.ino) の一致を要求します。
+          SKETCH_DIR="$CACHE/firmware"
+          mkdir -p "$BUILD_DIR" "$SKETCH_DIR" build
           command -v flock >/dev/null || { echo "flock が必要です (util-linux をイメージに追加してください)" >&2; exit 1; }
 
-          # 14日以上使われていない完成済みバイナリを掃除します。
-          find "$CACHE" -maxdepth 1 -type d -name 'out-*' -mtime +14 -exec rm -rf {} +
-
-          if [ -f "$OUT/bootloader.bin" ] && [ -f "$OUT/partitions.bin" ] && [ -f "$OUT/firmware.bin" ]; then
-            echo "同一スケッチのキャッシュを使用します"
-            touch "$OUT"
-            cp "$OUT"/*.bin build/
-          else
-            BUILD_DIR="$RUNNER_TEMP/arduino-build"
-            mkdir -p "$BUILD_DIR"
-
-            # ベースが未作成なら、最初の1ジョブだけがロックを持ってコンパイルし、ほかのジョブは待ちます。
-            # ロック取得後にベースが作られていれば、すぐにロックを手放して通常どおり進みます。
-            if [ ! -d "$BASE" ]; then
-              exec 9>"$CACHE/.lock"
-              flock 9
-              if [ -d "$BASE" ]; then flock -u 9; fi
-            fi
-
-            if [ -d "$BASE" ]; then
-              cp -a "$BASE"/. "$BUILD_DIR"/
-              rm -rf "$BUILD_DIR/sketch"
-              # ビルド設定を現在のスケッチに合わせ、Arduino CLI にキャッシュを消去されないようにします。
-              EXTRA_COUNT=$(find firmware -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.c' -o -name '*.cpp' -o -name '*.S' \) | wc -l)
-              python3 - "$BUILD_DIR/build.options.json" "$PWD/firmware" "$EXTRA_COUNT" <<'PY'
-          import json, sys
-          p, sketch, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
-          d = json.load(open(p))
-          d["sketchLocation"] = sketch
-          d["additionalFiles"] = ",".join(["../.."] * n)
-          json.dump(d, open(p, "w"))
-          PY
-            fi
-
-            arduino-cli compile \
-              --fqbn "$FQBN" \
-              --build-path "$BUILD_DIR" \
-              --output-dir build \
-              firmware/firmware.ino
-
-            if [ ! -d "$BASE" ]; then
-              # 最初のビルド結果から、スケッチ以外 (コア・ライブラリ) を共有ベースとして保存します。
-              # 一時ディレクトリに作ってから rename し、途中状態を他のジョブに見せません。
-              TMP="$CACHE/.tmp-base-$$"
-              rm -rf "$TMP"
-              cp -a "$BUILD_DIR" "$TMP"
-              rm -rf "$TMP/sketch"
-              mv "$TMP" "$BASE"
-              flock -u 9
-            else
-              # このスケッチで初めて必要になったライブラリがあれば、ベースに追加します。
-              mkdir -p "$BASE/libraries"
-              for lib in "$BUILD_DIR"/libraries/*/; do
-                [ -d "$lib" ] || continue
-                name=$(basename "$lib")
-                [ -e "$BASE/libraries/$name" ] && continue
-                TMP="$CACHE/.tmp-lib-$$-$name"
-                cp -a "$lib" "$TMP"
-                if ! mv -T "$TMP" "$BASE/libraries/$name"; then
-                  if [ -d "$BASE/libraries/$name" ]; then
-                    rm -rf "$TMP"
-                  else
-                    echo "ライブラリキャッシュを保存できません: $name" >&2
-                    exit 1
-                  fi
-                fi
-              done
-            fi
+          # 同じビルドディレクトリを安全に共有し、Arduino CLI に既存のコンパイル結果を再利用させます。
+          exec 9>"$CACHE/.lock"
+          flock 9
+          if ! diff -qr firmware "$SKETCH_DIR" >/dev/null; then
+            find "$SKETCH_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            cp -a firmware/. "$SKETCH_DIR/"
+            find "$SKETCH_DIR" -type f -exec touch {} +
           fi
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --build-path "$BUILD_DIR" \
+            --output-dir build \
+            "$SKETCH_DIR/firmware.ino"
+          flock -u 9
 
           # 出力された長いファイル名を、書き込みや配布で使う名前にそろえます。
           if [ -f build/firmware.ino.bootloader.bin ]; then
@@ -135,22 +82,6 @@ jobs:
           fi
           if [ -f build/firmware.ino.bin ]; then
             mv build/firmware.ino.bin build/firmware.bin
-          fi
-
-          # 完成済みバイナリをキャッシュします。
-          if [ ! -d "$OUT" ]; then
-            TMP="$CACHE/.tmp-out-$$"
-            rm -rf "$TMP"
-            mkdir "$TMP"
-            cp build/bootloader.bin build/partitions.bin build/firmware.bin "$TMP"/
-            if ! mv -T "$TMP" "$OUT"; then
-              if [ -d "$OUT" ]; then
-                rm -rf "$TMP"
-              else
-                echo "完成済みバイナリのキャッシュを保存できません" >&2
-                exit 1
-              fi
-            fi
           fi
 
       # ホストの s3fs マウント (R2) に直接書き込んで公開します。R2 の認証情報はジョブに渡しません。
