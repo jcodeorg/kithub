@@ -1,0 +1,53 @@
+# doc フォルダの内容を https://users.j-code.org/<owner>/<repository>/ に公開します。
+name: Publish Pages
+
+# main / master への push で実行します。doc フォルダが変わったときだけ実行します。
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "doc/**"
+      - ".gitea/workflows/publish-pages.yml"
+
+defaults:
+  run:
+    shell: sh
+
+jobs:
+  publish-pages:
+    runs-on: ubuntu-latest
+    container:
+      # actions/checkout 用の Node.js だけを含む軽量イメージです (専用ビルドイメージは不要)。
+      image: node:20-alpine
+      # ホストの s3fs マウント (R2 の gitea-pages バケット) を /publish に接続します。
+      volumes:
+        - /var/lib/kithub/pages:/publish
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Publish doc to users.j-code.org
+        run: |
+          set -eu
+          if [ ! -d doc ]; then
+            echo "公開する doc ディレクトリがありません" >&2
+            exit 1
+          fi
+          # R2 に接続されたマウントでない場合は、コンテナ内のディスクに書いてしまうため中止します。
+          if ! grep -qE ' /publish .* - fuse\.s3fs ' /proc/self/mountinfo; then
+            echo "/publish が R2 (s3fs) にマウントされていません" >&2
+            exit 1
+          fi
+
+          DEST="/publish/$GITHUB_REPOSITORY"
+          mkdir -p "$DEST"
+
+          # 公開先の既存の内容を消して、doc の内容に入れ替えます。
+          find "$DEST" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          # doc の内容 (隠しファイルを含む) をコピーします。
+          cp -R doc/. "$DEST/"
+          chmod -R a+rX "$DEST"
+          echo "公開先: https://users.j-code.org/$GITHUB_REPOSITORY/"

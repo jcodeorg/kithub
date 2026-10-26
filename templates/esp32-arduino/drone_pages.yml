@@ -1,0 +1,28 @@
+# Static HTML を users.j-code.org のドキュメントルートへ公開します。
+# Drone Runner で /home/kithub/dev-env/pages:/publish をマウントしてください。
+kind: pipeline
+type: docker
+name: publish-static-site
+
+trigger:
+  branch:
+    - main
+    - master
+  event:
+    - push
+
+steps:
+  - name: publish-to-pages
+    image: alpine:3
+    commands:
+      - |
+        if [ ! -d doc ]; then
+          echo "公開する doc ディレクトリがありません" >&2
+          exit 1
+        fi
+        DEST="/publish/$DRONE_REPO"
+        mkdir -p "$DEST"
+        find "$DEST" -mindepth 1 -maxdepth 1 -exec rm -rf {} \;
+        cp -R doc/. "$DEST/"
+        chmod -R a+rX "$DEST"
+        echo "公開先: https://users.j-code.org/$DRONE_REPO/"

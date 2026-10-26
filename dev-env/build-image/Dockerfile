@@ -9,7 +9,11 @@ ENV ARDUINO_DIRECTORIES_DATA=/opt/arduino/data \
     ARDUINO_BOARD_MANAGER_ADDITIONAL_URLS=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json \
     ARDUINO_UPDATER_ENABLE_NOTIFICATION=false
 
-# arduino-cli と、ESP32 ツールが使う pyserial
+# flock と、arduino-cli・ESP32 ツールが使う pyserial
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends util-linux \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN curl -fsSL https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz \
       | tar -xz -C /usr/local/bin arduino-cli \
  && python3 -m pip install --no-cache-dir pyserial
@@ -20,17 +24,3 @@ RUN arduino-cli core update-index \
  && arduino-cli lib install "U8g2" "Adafruit AHTX0" "BH1750" "Adafruit NeoPixel" \
  && git clone --depth 1 https://github.com/pschatzmann/ESP32-A2DP.git /opt/arduino/user/libraries/ESP32-A2DP \
  && rm -rf /opt/arduino/staging
-
-# 読み取り専用のベース。ESP32 コアとライブラリを事前コンパイルしたビルドディレクトリを焼き込む。
-# --build-path を指定するとコアのキャッシュもこの中に作られるため、別のキャッシュは持たない。
-# ジョブは開始時にこれを自分用にコピーして使うため、同時実行でもキャッシュが競合・汚染されない。
-# ワークフローと同じ FQBN でビルドすること (キャッシュはボード設定ごとに分かれる)。
-COPY warmup /tmp/warmup
-RUN arduino-cli compile \
-      --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
-      --build-path /opt/arduino/build-base \
-      --output-dir /tmp/warmup-out \
-      /tmp/warmup \
- && ls /opt/arduino/build-base >/dev/null \
- && rm -rf /tmp/warmup /tmp/warmup-out \
- && chmod -R a+rX /opt/arduino/build-base

@@ -25,12 +25,15 @@ jobs:
     # このジョブ全体を Linux 環境で実行します。
     runs-on: ubuntu-latest
     container:
-      # Arduino CLI・ESP32 コア・ライブラリを焼き込んだ専用イメージです (dev-env/scripts/build-image.sh で作成)。
+      # Arduino CLI・ESP32 コア・ライブラリを導入した専用イメージです (dev-env/scripts/build-image.sh で作成)。
+      # イメージにはコンパイル結果のキャッシュを含めません。
       # Node.js も含むため actions/checkout が動きます。
       image: kithub/esp32-arduino:latest
-      # ホストの s3fs マウント (R2 の gitea-pages バケット) を /publish に接続します。
+      # /publish: ホストの s3fs マウント (R2 の gitea-pages バケット)。
+      # /cache: 全ジョブで共有するコンパイル結果のキャッシュ (ホストのローカルディスク)。
       volumes:
         - /var/lib/kithub/pages:/publish
+        - /var/lib/kithub/build-cache:/cache
 
     steps:
       # リポジトリのソースコードをジョブ内に取得します。
@@ -40,28 +43,88 @@ jobs:
       # Arduino CLI、ESP32 コア、ライブラリを用意してスケッチをコンパイルします。
       - name: Build firmware
         run: |
-          # どのコマンドが失敗しても、後続の処理を続けずにジョブを失敗させます。
           set -euo pipefail
-          # ツール・ボードコア・ライブラリはイメージに入っているため、導入処理は不要です。
-          arduino-cli version
-          # コンパイルのベースは、イメージに焼き込んだビルドディレクトリ (コア・ライブラリのオブジェクト入り) を、
-          # ジョブ専用の場所へコピーして使います。
-          # ジョブごとに独立するため、40人が同時にビルドしても競合せず、他のジョブのベースも書き換えません。
-          BUILD_DIR="$RUNNER_TEMP/arduino-build"
-          T0=$(date +%s.%N)
-          mkdir -p "$BUILD_DIR"
-          cp -a /opt/arduino/build-base/. "$BUILD_DIR/"
-          T1=$(date +%s.%N)
-          # 対象ボードの設定を指定してファームウェアをビルドします。ログが長くなるため -v は付けません。
-          arduino-cli compile \
-            --fqbn "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M" \
-            --build-path "$BUILD_DIR" \
-            --output-dir build \
-            firmware/firmware.ino
-          T2=$(date +%s.%N)
-          # 所要時間の内訳。コピーに時間がかかるか、コンパイルに時間がかかるかを切り分けます。
-          python3 -c 'import sys; a,b,c=map(float,sys.argv[1:]); print(f"所要時間: ベースのコピー {b-a:.1f}s / コンパイル {c-b:.1f}s")' "$T0" "$T1" "$T2"
-          du -sh "$BUILD_DIR" | sed 's/^/ビルドディレクトリのサイズ: /'
+          FQBN="esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,FlashSize=4M"
+          CACHE=/cache/arduino
+          mkdir -p "$CACHE" build
+
+          # キャッシュのキー。ENV_KEY はボード設定・コア・ライブラリの版、SRC_KEY はスケッチの内容です。
+          ENV_KEY=$({ echo "$FQBN"; arduino-cli version; arduino-cli core list; arduino-cli lib list; } | sha256sum | cut -d' ' -f1)
+          SRC_KEY=$(find firmware -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+          BASE="$CACHE/base-$ENV_KEY"          # コアとライブラリのコンパイル結果 (全員で共有)
+          OUT="$CACHE/out-$ENV_KEY-$SRC_KEY"   # 同一スケッチの完成済みバイナリ
+
+          command -v flock >/dev/null || { echo "flock が必要です (util-linux をイメージに追加してください)" >&2; exit 1; }
+
+          # 14日以上使われていない完成済みバイナリを掃除します。
+          find "$CACHE" -maxdepth 1 -type d -name 'out-*' -mtime +14 -exec rm -rf {} +
+
+          if [ -f "$OUT/bootloader.bin" ] && [ -f "$OUT/partitions.bin" ] && [ -f "$OUT/firmware.bin" ]; then
+            echo "同一スケッチのキャッシュを使用します"
+            touch "$OUT"
+            cp "$OUT"/*.bin build/
+          else
+            BUILD_DIR="$RUNNER_TEMP/arduino-build"
+            mkdir -p "$BUILD_DIR"
+
+            # ベースが未作成なら、最初の1ジョブだけがロックを持ってコンパイルし、ほかのジョブは待ちます。
+            # ロック取得後にベースが作られていれば、すぐにロックを手放して通常どおり進みます。
+            if [ ! -d "$BASE" ]; then
+              exec 9>"$CACHE/.lock"
+              flock 9
+              if [ -d "$BASE" ]; then flock -u 9; fi
+            fi
+
+            if [ -d "$BASE" ]; then
+              cp -a "$BASE"/. "$BUILD_DIR"/
+              rm -rf "$BUILD_DIR/sketch"
+              # ビルド設定を現在のスケッチに合わせ、Arduino CLI にキャッシュを消去されないようにします。
+              EXTRA_COUNT=$(find firmware -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.c' -o -name '*.cpp' -o -name '*.S' \) | wc -l)
+              python3 - "$BUILD_DIR/build.options.json" "$PWD/firmware" "$EXTRA_COUNT" <<'PY'
+          import json, sys
+          p, sketch, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          d = json.load(open(p))
+          d["sketchLocation"] = sketch
+          d["additionalFiles"] = ",".join(["../.."] * n)
+          json.dump(d, open(p, "w"))
+          PY
+            fi
+
+            arduino-cli compile \
+              --fqbn "$FQBN" \
+              --build-path "$BUILD_DIR" \
+              --output-dir build \
+              firmware/firmware.ino
+
+            if [ ! -d "$BASE" ]; then
+              # 最初のビルド結果から、スケッチ以外 (コア・ライブラリ) を共有ベースとして保存します。
+              # 一時ディレクトリに作ってから rename し、途中状態を他のジョブに見せません。
+              TMP="$CACHE/.tmp-base-$$"
+              rm -rf "$TMP"
+              cp -a "$BUILD_DIR" "$TMP"
+              rm -rf "$TMP/sketch"
+              mv "$TMP" "$BASE"
+              flock -u 9
+            else
+              # このスケッチで初めて必要になったライブラリがあれば、ベースに追加します。
+              mkdir -p "$BASE/libraries"
+              for lib in "$BUILD_DIR"/libraries/*/; do
+                [ -d "$lib" ] || continue
+                name=$(basename "$lib")
+                [ -e "$BASE/libraries/$name" ] && continue
+                TMP="$CACHE/.tmp-lib-$$-$name"
+                cp -a "$lib" "$TMP"
+                if ! mv -T "$TMP" "$BASE/libraries/$name"; then
+                  if [ -d "$BASE/libraries/$name" ]; then
+                    rm -rf "$TMP"
+                  else
+                    echo "ライブラリキャッシュを保存できません: $name" >&2
+                    exit 1
+                  fi
+                fi
+              done
+            fi
+          fi
 
           # 出力された長いファイル名を、書き込みや配布で使う名前にそろえます。
           if [ -f build/firmware.ino.bootloader.bin ]; then
@@ -72,6 +135,22 @@ jobs:
           fi
           if [ -f build/firmware.ino.bin ]; then
             mv build/firmware.ino.bin build/firmware.bin
+          fi
+
+          # 完成済みバイナリをキャッシュします。
+          if [ ! -d "$OUT" ]; then
+            TMP="$CACHE/.tmp-out-$$"
+            rm -rf "$TMP"
+            mkdir "$TMP"
+            cp build/bootloader.bin build/partitions.bin build/firmware.bin "$TMP"/
+            if ! mv -T "$TMP" "$OUT"; then
+              if [ -d "$OUT" ]; then
+                rm -rf "$TMP"
+              else
+                echo "完成済みバイナリのキャッシュを保存できません" >&2
+                exit 1
+              fi
+            fi
           fi
 
       # ホストの s3fs マウント (R2) に直接書き込んで公開します。R2 の認証情報はジョブに渡しません。

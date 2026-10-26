@@ -51,8 +51,8 @@ fi
 # マウント先とキャッシュは /var 以下に置く (旧 ~/dev-env/pages のマウントがあれば外して fstab から削除する)
 if findmnt -n "$OLD_PAGES" >/dev/null 2>&1; then sudo umount "$OLD_PAGES" || true; fi
 sudo sed -i "\|[[:space:]]$OLD_PAGES[[:space:]]|d" /etc/fstab
-sudo mkdir -p "$PAGES" "$S3FS_CACHE"
-sudo chown "$(id -u):$(id -g)" "$PAGES" "$S3FS_CACHE"
+sudo mkdir -p "$PAGES" "$S3FS_CACHE" "$BUILD_CACHE_DIR"
+sudo chown "$(id -u):$(id -g)" "$PAGES" "$S3FS_CACHE" "$BUILD_CACHE_DIR"
 # fstab に書いて、再起動後も自動でマウントされるようにする (同じパスの古い行は先に削除)
 sudo sed -i "\|[[:space:]]$PAGES[[:space:]]|d" /etc/fstab
 echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,uid=$(id -u),gid=$(id -g),use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,use_cache=$S3FS_CACHE,ensure_diskfree=1024,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
