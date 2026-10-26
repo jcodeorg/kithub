@@ -2,7 +2,6 @@
 北区用GitHub学習サイト
 
 
-
 1. サーバー契約
 XServer VPSクラウド
 サーバー名:vps-2026-10-09-kithub
