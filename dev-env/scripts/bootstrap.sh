@@ -57,9 +57,10 @@ sudo chown "$(id -u):$(id -g)" "$PAGES" "$S3FS_CACHE" "$BUILD_CACHE_DIR"
 sudo sed -i "\|[[:space:]]$PAGES[[:space:]]|d" /etc/fstab
 echo "$R2_PAGES_BUCKET $PAGES fuse.s3fs _netdev,allow_other,uid=$(id -u),gid=$(id -g),use_path_request_style,url=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com,endpoint=auto,passwd_file=/etc/passwd-s3fs,umask=0022,mp_umask=0022,stat_cache_expire=1,use_cache=$S3FS_CACHE,ensure_diskfree=1024,retries=5 0 0" | sudo tee -a /etc/fstab >/dev/null
 
-# pages がマウントできないときは Docker を起動させない (ローカルディスクへの誤書き込み防止)
+# 必要なホストパスが利用可能になるまで Docker を起動しない
 sudo mkdir -p /etc/systemd/system/docker.service.d
-printf '[Unit]\nRequiresMountsFor=%s\n' "$PAGES" | sudo tee /etc/systemd/system/docker.service.d/require-pages-mount.conf >/dev/null
+printf '[Unit]\nRequiresMountsFor=%s %s\n' "$PAGES" "$BUILD_CACHE_DIR" \
+  | sudo tee /etc/systemd/system/docker.service.d/require-kithub-mounts.conf >/dev/null
 sudo systemctl daemon-reload
 
 # 実際にマウントし、R2 (fuse.s3fs) に接続できたことを確認する。失敗するとここで中止する
