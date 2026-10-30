@@ -66,7 +66,9 @@ jobs:
             cp -a firmware/. "$SKETCH_DIR/"
             find "$SKETCH_DIR" -type f -exec touch {} +
           fi
+          # Arduino CLIとコンパイラの詳細ログをActionsのジョブログへ出力します。
           arduino-cli compile \
+            --verbose \
             --fqbn "$FQBN" \
             --build-path "$BUILD_DIR" \
             --output-dir build \
@@ -105,6 +107,10 @@ jobs:
           DEST="/publish/$GITHUB_REPOSITORY/$VERSION"
           mkdir -p "$DEST"
 
+          # 書き込みページを <owner>/<repository>/ 直下に置き、./latest/ を既定の書き込み対象にします。
+          cp doc/index.html "/publish/$GITHUB_REPOSITORY/index.html"
+          cp doc/bt_logger.html "/publish/$GITHUB_REPOSITORY/bt_logger.html"
+
           # manifest.json が参照する3つのバイナリを並列に書き込みます。
           START=$(date +%s.%N)
           printf '%s\n' bootloader.bin partitions.bin firmware.bin \
@@ -136,7 +142,7 @@ jobs:
               json.dump(manifest, f)
           PY
           sync "$DEST"/*
-          echo "公開先: https://users.j-code.org/$GITHUB_REPOSITORY/$VERSION/ ($(python3 -c "import sys; print(f'{float(sys.argv[2])-float(sys.argv[1]):.2f}')" "$START" "$(date +%s.%N)") 秒)"
+          echo "公開先: https://users.j-code.org/$GITHUB_REPOSITORY/ ($(python3 -c "import sys; print(f'{float(sys.argv[2])-float(sys.argv[1]):.2f}')" "$START" "$(date +%s.%N)") 秒)"
 
       # タグの push の場合だけ Gitea リリースを作り、ビルドしたバイナリを添付します。
       - name: Create Gitea release and upload firmware
